@@ -23,8 +23,15 @@ Fixation-gear mechanics (`FixationGear.cs`), all per axial slice in the mask dom
 - **Threshold** — mask voxels at/above the HU threshold.
 - **Erase body** — fill the body's own contours (from `GetContoursOnImagePlane`) with 0, removing
   the patient interior *before* contouring.
+- **Clean up** — morphological **close** (`CloseRadiusPx`) fills small gaps so thin/low-HU fixation
+  is less patchy, then a connected-component **area filter** (`MinComponentPixelArea`) drops noise
+  specks and small couch fragments.
 - **Write** — extract the remaining contours with OpenCV (same technique as
   `PalliativeAutoPlan/Segmenter.cs`) and write them onto the structure.
+
+A plain global threshold is simultaneously too greedy (noise/couch are also dense-and-outside-body)
+and too timid (thin/low-HU fixation dips below the threshold → patchy), which the close +
+component-filter pass is meant to counteract. Both are tunable constants in `FixationGear.cs`.
 
 Excluding the body in the mask domain (instead of thresholding everything and then
 `SegmentVolume.Sub(body)`) matters for speed: at −550 HU the whole patient is above threshold, so

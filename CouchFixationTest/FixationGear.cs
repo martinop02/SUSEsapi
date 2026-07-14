@@ -16,7 +16,9 @@ namespace CouchFixationTest
     /// contours we actually keep:
     ///   1. Threshold the CT into a binary mask.
     ///   2. Erase the body from that mask, using the body's own stored contours on the slice.
-    ///   3. Extract the remaining contours with OpenCV (same technique as Segmenter.cs) and write
+    ///   3. Clean up: morphological close (de-patch thin/low-HU fixation) then drop small connected
+    ///      components (remove noise specks and small couch fragments).
+    ///   4. Extract the remaining contours with OpenCV (same technique as Segmenter.cs) and write
     ///      them onto the structure.
     ///
     /// This is deliberately done in the mask domain rather than "threshold everything, then
@@ -31,8 +33,12 @@ namespace CouchFixationTest
     {
         public const string StructureId = "fixation_gear";
 
-        // Ignore contour specks below this pixel area to keep CT noise near the threshold out.
-        private const double MinContourPixelArea = 2.0;
+        // --- Cleanup parameters (per axial slice), tune from real cases ---
+        // Morphological close radius (px): fills small gaps so thin/low-HU fixation is less patchy.
+        private const int CloseRadiusPx = 2;
+        // Drop connected components smaller than this (px area): removes noise specks and small
+        // couch fragments that survive the threshold.
+        private const int MinComponentPixelArea = 20;
 
         /// <summary>
         /// Creates (or replaces) the fixation-gear structure in <paramref name="set"/>. Requires the
@@ -114,13 +120,15 @@ namespace CouchFixationTest
                     if (bodyPolys.Length > 0)
                         Cv2.FillPoly(slice, bodyPolys, Scalar.All(0));
 
+                    // Clean up: close small gaps (de-patch) then drop tiny components (noise/couch bits).
+                    CleanMask(slice, bodyPolys);
+
                     Point[][] contours = Cv2.FindContoursAsArray(
                         slice, RetrievalModes.Tree, ContourApproximationModes.ApproxSimple);
 
                     foreach (Point[] contour in contours)
                     {
                         if (contour.Length < 3) continue;
-                        if (Cv2.ContourArea(contour) < MinContourPixelArea) continue;
 
                         VVector[] vv = contour.Select(pt => ToDicom(img, pt.X, pt.Y, k)).ToArray();
                         fixation.AddContourOnImagePlane(vv, k);
@@ -130,6 +138,46 @@ namespace CouchFixationTest
             }
 
             log($"  Wrote {written} contour(s) across {img.ZSize} slices.");
+        }
+
+        // Morphological close (fills gaps) followed by a connected-component area filter (removes
+        // small noise/couch fragments). Runs in place on a CV_8UC1 mask.
+        private static void CleanMask(Mat slice, Point[][] bodyPolys)
+        {
+            if (CloseRadiusPx > 0)
+            {
+                int d = 2 * CloseRadiusPx + 1;
+                using (Mat kernel = Cv2.GetStructuringElement(MorphShapes.Ellipse, new Size(d, d)))
+                    Cv2.MorphologyEx(slice, slice, MorphTypes.Close, kernel);
+
+                // Close dilates first, so it can bleed into the erased body region; re-erase it.
+                if (bodyPolys.Length > 0)
+                    Cv2.FillPoly(slice, bodyPolys, Scalar.All(0));
+            }
+
+            if (MinComponentPixelArea <= 0) return;
+
+            using (Mat labels = new Mat(), stats = new Mat(), centroids = new Mat())
+            {
+                int n = Cv2.ConnectedComponentsWithStats(slice, labels, stats, centroids);
+                if (n <= 1) return; // background only
+
+                // Keep-flag per label; label 0 is background.
+                byte[] keep = new byte[n];
+                for (int lbl = 1; lbl < n; lbl++)
+                    keep[lbl] = (byte)(stats.At<int>(lbl, (int)ConnectedComponentsTypes.Area) >= MinComponentPixelArea ? 255 : 0);
+
+                unsafe
+                {
+                    int* lp = (int*)labels.DataPointer;
+                    byte* sp = (byte*)slice.DataPointer;
+                    int lStride = (int)(labels.Step() / sizeof(int));
+                    long sStride = slice.Step();
+                    for (int y = 0; y < slice.Rows; y++)
+                        for (int x = 0; x < slice.Cols; x++)
+                            sp[y * sStride + x] = keep[lp[y * lStride + x]];
+                }
+            }
         }
 
         // DICOM contours -> pixel polygons (dropping degenerate ones), for OpenCV fill.
