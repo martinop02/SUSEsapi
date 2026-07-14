@@ -18,11 +18,18 @@ Runs entirely on its own **scratch structure set**, so clinical data is never to
 
    > every voxel with **HU ≥ −550** that is **not inside the body**.
 
-Fixation-gear mechanics (`FixationGear.cs`):
+Fixation-gear mechanics (`FixationGear.cs`), all per axial slice in the mask domain:
 
-- **Threshold** — per axial slice, mask voxels at/above the HU threshold and convert the mask to
-  contours with OpenCV (the same technique `PalliativeAutoPlan/Segmenter.cs` uses).
-- **Exclude body** — subtract the body volume with ESAPI's boolean op (`SegmentVolume.Sub`).
+- **Threshold** — mask voxels at/above the HU threshold.
+- **Erase body** — fill the body's own contours (from `GetContoursOnImagePlane`) with 0, removing
+  the patient interior *before* contouring.
+- **Write** — extract the remaining contours with OpenCV (same technique as
+  `PalliativeAutoPlan/Segmenter.cs`) and write them onto the structure.
+
+Excluding the body in the mask domain (instead of thresholding everything and then
+`SegmentVolume.Sub(body)`) matters for speed: at −550 HU the whole patient is above threshold, so
+the naive approach writes thousands of body contours via the expensive `AddContourOnImagePlane` and
+then discards them. Erasing the body first cuts the write count by 1-2 orders of magnitude.
 
 What remains is everything denser than the threshold that is outside the patient — fixation
 devices/masks and, if imaged, the couch/table. This is a deliberately simple first definition; the

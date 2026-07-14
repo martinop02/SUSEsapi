@@ -9,19 +9,23 @@ using Image = VMS.TPS.Common.Model.API.Image;
 namespace CouchFixationTest
 {
     /// <summary>
-    /// Builds a "fixation gear" structure by thresholding the CT on Hounsfield units and then
-    /// removing everything that lies inside the body.
+    /// Builds a "fixation gear" structure: every voxel with HU >= <paramref name="huThreshold"/>
+    /// that is NOT inside the body.
     ///
-    /// Approach:
-    ///   1. Threshold: keep every voxel with HU >= <paramref name="huThreshold"/>. Per axial slice
-    ///      the mask is turned into contours with OpenCV (the same technique Segmenter.cs uses) and
-    ///      written onto a new structure.
-    ///   2. Exclude body: subtract the body's volume with ESAPI's own boolean op
-    ///      (SegmentVolume.Sub), which is faster and cleaner than testing each voxel.
+    /// Both steps happen per axial slice in the (cheap) mask domain, so we only ever write the
+    /// contours we actually keep:
+    ///   1. Threshold the CT into a binary mask.
+    ///   2. Erase the body from that mask, using the body's own stored contours on the slice.
+    ///   3. Extract the remaining contours with OpenCV (same technique as Segmenter.cs) and write
+    ///      them onto the structure.
     ///
-    /// What remains is everything denser than the threshold that is NOT inside the patient:
-    /// fixation devices, masks/straps, and (if imaged) the couch/table. This is a deliberately
-    /// simple first definition to iterate on — tune the threshold and add filtering from here.
+    /// This is deliberately done in the mask domain rather than "threshold everything, then
+    /// SegmentVolume.Sub(body)": at -550 HU the whole patient is above threshold, so the naive
+    /// approach writes thousands of body/hole contours via the expensive AddContourOnImagePlane and
+    /// then throws them away. Erasing the body first drops the write count by 1-2 orders of magnitude.
+    ///
+    /// What remains is everything denser than the threshold that is outside the patient: fixation
+    /// devices, masks/straps, and (if imaged) the couch/table. Tune the threshold from real cases.
     /// </summary>
     public static class FixationGear
     {
@@ -73,28 +77,14 @@ namespace CouchFixationTest
             bool keepAtOrAbove = slope > 0; // normal CT: higher stored value = higher HU
             log($"  HU threshold {huThreshold:0.#} -> raw voxel {rawThreshold:0.#} (keep {(keepAtOrAbove ? ">=" : "<=")}).");
 
-            WriteThresholdContours(fixation, image, rawThreshold, keepAtOrAbove, log);
-            log($"  Thresholded volume (before body exclusion): {SafeVolume(fixation):0.0} cc.");
-
-            // Exclude the patient interior. Match resolution so the boolean op is valid.
-            try
-            {
-                if (body.IsHighResolution && !fixation.IsHighResolution)
-                    fixation.ConvertToHighResolution();
-
-                fixation.SegmentVolume = fixation.SegmentVolume.Sub(body.SegmentVolume);
-                log($"  Volume after excluding body: {SafeVolume(fixation):0.0} cc.");
-            }
-            catch (Exception ex)
-            {
-                log("  WARNING: could not subtract the body volume: " + ex.Message);
-            }
+            WriteThresholdContours(fixation, image, body, rawThreshold, keepAtOrAbove, log);
+            log($"  Volume: {SafeVolume(fixation):0.0} cc.");
 
             return fixation;
         }
 
-        // Threshold each axial slice into a binary mask and write its contours onto the structure.
-        private static void WriteThresholdContours(Structure fixation, Image img, double rawThreshold, bool keepAtOrAbove, Action<string> log)
+        // Per slice: threshold -> erase body -> write the remaining contours onto the structure.
+        private static void WriteThresholdContours(Structure fixation, Image img, Structure body, double rawThreshold, bool keepAtOrAbove, Action<string> log)
         {
             int nx = img.XSize, ny = img.YSize;
             int[,] plane = new int[nx, ny];
@@ -119,6 +109,11 @@ namespace CouchFixationTest
                             }
                     }
 
+                    // Erase the patient interior in the mask domain (fill the body polygons with 0).
+                    Point[][] bodyPolys = ToPixelPolygons(img, body.GetContoursOnImagePlane(k));
+                    if (bodyPolys.Length > 0)
+                        Cv2.FillPoly(slice, bodyPolys, Scalar.All(0));
+
                     Point[][] contours = Cv2.FindContoursAsArray(
                         slice, RetrievalModes.Tree, ContourApproximationModes.ApproxSimple);
 
@@ -137,6 +132,16 @@ namespace CouchFixationTest
             log($"  Wrote {written} contour(s) across {img.ZSize} slices.");
         }
 
+        // DICOM contours -> pixel polygons (dropping degenerate ones), for OpenCV fill.
+        private static Point[][] ToPixelPolygons(Image img, VVector[][] contours)
+        {
+            if (contours == null) return new Point[0][];
+            return contours
+                .Where(c => c != null && c.Length >= 3)
+                .Select(c => c.Select(p => DicomToPixel(img, p)).ToArray())
+                .ToArray();
+        }
+
         // Voxel index -> DICOM point using the image direction cosines (orientation-safe).
         private static VVector ToDicom(Image img, int x, int y, int z)
         {
@@ -145,6 +150,17 @@ namespace CouchFixationTest
                  + y * img.YRes * img.YDirection
                  + z * img.ZRes * img.ZDirection;
         }
+
+        // DICOM point -> pixel index: project onto the (unit) direction cosines and divide by spacing.
+        private static Point DicomToPixel(Image img, VVector p)
+        {
+            VVector d = p - img.Origin;
+            double x = Dot(d, img.XDirection) / img.XRes;
+            double y = Dot(d, img.YDirection) / img.YRes;
+            return new Point((int)Math.Round(x), (int)Math.Round(y));
+        }
+
+        private static double Dot(VVector a, VVector b) => a.x * b.x + a.y * b.y + a.z * b.z;
 
         private static double SafeVolume(Structure s)
         {
