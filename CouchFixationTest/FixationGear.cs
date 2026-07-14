@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Linq;
 using OpenCvSharp;
 using VMS.TPS.Common.Model.API;
@@ -12,33 +13,34 @@ namespace CouchFixationTest
     /// Builds a "fixation gear" structure: every voxel with HU >= <paramref name="huThreshold"/>
     /// that is NOT inside the body.
     ///
-    /// Both steps happen per axial slice in the (cheap) mask domain, so we only ever write the
-    /// contours we actually keep:
-    ///   1. Threshold the CT into a binary mask.
-    ///   2. Erase the body from that mask, using the body's own stored contours on the slice.
-    ///   3. Clean up: morphological close (de-patch thin/low-HU fixation) then drop small connected
-    ///      components (remove noise specks and small couch fragments).
-    ///   4. Extract the remaining contours with OpenCV (same technique as Segmenter.cs) and write
-    ///      them onto the structure.
+    /// Pipeline:
+    ///   1. Per slice, build a binary mask: threshold the CT, erase the body (fill its own contours),
+    ///      and morphologically close small gaps so thin/low-HU fixation is less patchy. Store each
+    ///      cleaned slice into a full 3D volume.
+    ///   2. Filter the 3D volume by connected-component size: keep only components whose total volume
+    ///      is >= MinComponentVolumeCc. This removes noise specks and small couch fragments WITHOUT
+    ///      losing the fixation — which is thin on any single slice but large in 3D (a 2D per-slice
+    ///      size filter can't tell those apart and wrongly deletes the fixation too).
+    ///   3. Per slice, extract the remaining contours with OpenCV (same technique as Segmenter.cs)
+    ///      and write them onto the structure.
     ///
-    /// This is deliberately done in the mask domain rather than "threshold everything, then
-    /// SegmentVolume.Sub(body)": at -550 HU the whole patient is above threshold, so the naive
-    /// approach writes thousands of body/hole contours via the expensive AddContourOnImagePlane and
-    /// then throws them away. Erasing the body first drops the write count by 1-2 orders of magnitude.
+    /// The body is excluded in the mask domain (not "threshold everything then SegmentVolume.Sub"):
+    /// at -550 HU the whole patient is above threshold, so the naive approach writes thousands of
+    /// body/hole contours via the expensive AddContourOnImagePlane and then discards them.
     ///
-    /// What remains is everything denser than the threshold that is outside the patient: fixation
-    /// devices, masks/straps, and (if imaged) the couch/table. Tune the threshold from real cases.
+    /// What remains is dense material outside the patient: fixation devices, masks/straps, and (if
+    /// imaged) the couch/table. Tune the threshold and the cleanup parameters from real cases.
     /// </summary>
     public static class FixationGear
     {
         public const string StructureId = "fixation_gear";
 
-        // --- Cleanup parameters (per axial slice), tune from real cases ---
-        // Morphological close radius (px): fills small gaps so thin/low-HU fixation is less patchy.
+        // --- Cleanup parameters, tune from real cases ---
+        // Morphological close radius (px, per slice): fills small gaps so fixation is less patchy.
         private const int CloseRadiusPx = 2;
-        // Drop connected components smaller than this (px area): removes noise specks and small
-        // couch fragments that survive the threshold.
-        private const int MinComponentPixelArea = 20;
+        // Drop 3D connected components smaller than this (cc): removes noise and small couch bits
+        // while keeping the fixation, which is large in 3D even though thin per slice.
+        private const double MinComponentVolumeCc = 0.2;
 
         /// <summary>
         /// Creates (or replaces) the fixation-gear structure in <paramref name="set"/>. Requires the
@@ -83,23 +85,23 @@ namespace CouchFixationTest
             bool keepAtOrAbove = slope > 0; // normal CT: higher stored value = higher HU
             log($"  HU threshold {huThreshold:0.#} -> raw voxel {rawThreshold:0.#} (keep {(keepAtOrAbove ? ">=" : "<=")}).");
 
-            WriteThresholdContours(fixation, image, body, rawThreshold, keepAtOrAbove, log);
+            BuildFixation(fixation, image, body, rawThreshold, keepAtOrAbove, log);
             log($"  Volume: {SafeVolume(fixation):0.0} cc.");
 
             return fixation;
         }
 
-        // Per slice: threshold -> erase body -> write the remaining contours onto the structure.
-        private static void WriteThresholdContours(Structure fixation, Image img, Structure body, double rawThreshold, bool keepAtOrAbove, Action<string> log)
+        private static void BuildFixation(Structure fixation, Image img, Structure body, double rawThreshold, bool keepAtOrAbove, Action<string> log)
         {
-            int nx = img.XSize, ny = img.YSize;
+            int nx = img.XSize, ny = img.YSize, nz = img.ZSize;
+            int planeSize = nx * ny;
+            byte[] vol = new byte[planeSize * nz];   // 0/255 cleaned mask, whole volume
             int[,] plane = new int[nx, ny];
-            int written = 0;
 
-            for (int k = 0; k < img.ZSize; k++)
+            // Pass 1: per-slice threshold -> erase body -> close -> store into vol.
+            for (int k = 0; k < nz; k++)
             {
                 img.GetVoxels(k, plane);
-
                 using (Mat slice = new Mat(ny, nx, MatType.CV_8UC1, Scalar.All(0)))
                 {
                     unsafe
@@ -115,21 +117,41 @@ namespace CouchFixationTest
                             }
                     }
 
-                    // Erase the patient interior in the mask domain (fill the body polygons with 0).
                     Point[][] bodyPolys = ToPixelPolygons(img, body.GetContoursOnImagePlane(k));
                     if (bodyPolys.Length > 0)
                         Cv2.FillPoly(slice, bodyPolys, Scalar.All(0));
 
-                    // Clean up: close small gaps (de-patch) then drop tiny components (noise/couch bits).
-                    CleanMask(slice, bodyPolys);
+                    if (CloseRadiusPx > 0)
+                    {
+                        int d = 2 * CloseRadiusPx + 1;
+                        using (Mat kernel = Cv2.GetStructuringElement(MorphShapes.Ellipse, new Size(d, d)))
+                            Cv2.MorphologyEx(slice, slice, MorphTypes.Close, kernel);
+                        if (bodyPolys.Length > 0)           // close can bleed into the body; re-erase
+                            Cv2.FillPoly(slice, bodyPolys, Scalar.All(0));
+                    }
+
+                    CopySliceIntoVolume(slice, vol, k * planeSize, nx, ny);
+                }
+            }
+
+            // Pass 2: 3D connected-component size filter.
+            double voxelCc = img.XRes * img.YRes * img.ZRes / 1000.0;   // mm^3 -> cc
+            int minVoxels = Math.Max(1, (int)(MinComponentVolumeCc / voxelCc));
+            RemoveSmallComponents3D(vol, nx, ny, nz, minVoxels, log);
+
+            // Pass 3: contour each slice from the cleaned volume and write.
+            int written = 0;
+            for (int k = 0; k < nz; k++)
+            {
+                using (Mat slice = SliceFromVolume(vol, k * planeSize, nx, ny))
+                {
+                    if (Cv2.CountNonZero(slice) == 0) continue;
 
                     Point[][] contours = Cv2.FindContoursAsArray(
                         slice, RetrievalModes.Tree, ContourApproximationModes.ApproxSimple);
-
                     foreach (Point[] contour in contours)
                     {
                         if (contour.Length < 3) continue;
-
                         VVector[] vv = contour.Select(pt => ToDicom(img, pt.X, pt.Y, k)).ToArray();
                         fixation.AddContourOnImagePlane(vv, k);
                         written++;
@@ -137,47 +159,107 @@ namespace CouchFixationTest
                 }
             }
 
-            log($"  Wrote {written} contour(s) across {img.ZSize} slices.");
+            log($"  Wrote {written} contour(s) across {nz} slices.");
         }
 
-        // Morphological close (fills gaps) followed by a connected-component area filter (removes
-        // small noise/couch fragments). Runs in place on a CV_8UC1 mask.
-        private static void CleanMask(Mat slice, Point[][] bodyPolys)
+        // 26-connected component labelling over the whole volume; zero any component with fewer than
+        // minVoxels voxels. Iterative (explicit stack) so deep components don't blow the call stack.
+        private static void RemoveSmallComponents3D(byte[] vol, int nx, int ny, int nz, int minVoxels, Action<string> log)
         {
-            if (CloseRadiusPx > 0)
+            int planeSize = nx * ny;
+            int total = vol.Length;
+            bool[] visited = new bool[total];
+            var stack = new Stack<int>();
+            var comp = new List<int>();
+            int kept = 0, removed = 0;
+            long keptVoxels = 0;
+
+            for (int start = 0; start < total; start++)
             {
-                int d = 2 * CloseRadiusPx + 1;
-                using (Mat kernel = Cv2.GetStructuringElement(MorphShapes.Ellipse, new Size(d, d)))
-                    Cv2.MorphologyEx(slice, slice, MorphTypes.Close, kernel);
+                if (vol[start] == 0 || visited[start]) continue;
 
-                // Close dilates first, so it can bleed into the erased body region; re-erase it.
-                if (bodyPolys.Length > 0)
-                    Cv2.FillPoly(slice, bodyPolys, Scalar.All(0));
-            }
+                comp.Clear();
+                stack.Push(start);
+                visited[start] = true;
 
-            if (MinComponentPixelArea <= 0) return;
-
-            using (Mat labels = new Mat(), stats = new Mat(), centroids = new Mat())
-            {
-                int n = Cv2.ConnectedComponentsWithStats(slice, labels, stats, centroids);
-                if (n <= 1) return; // background only
-
-                // Keep-flag per label; label 0 is background.
-                byte[] keep = new byte[n];
-                for (int lbl = 1; lbl < n; lbl++)
-                    keep[lbl] = (byte)(stats.At<int>(lbl, (int)ConnectedComponentsTypes.Area) >= MinComponentPixelArea ? 255 : 0);
-
-                unsafe
+                while (stack.Count > 0)
                 {
-                    int* lp = (int*)labels.DataPointer;
-                    byte* sp = (byte*)slice.DataPointer;
-                    int lStride = (int)(labels.Step() / sizeof(int));
-                    long sStride = slice.Step();
-                    for (int y = 0; y < slice.Rows; y++)
-                        for (int x = 0; x < slice.Cols; x++)
-                            sp[y * sStride + x] = keep[lp[y * lStride + x]];
+                    int idx = stack.Pop();
+                    comp.Add(idx);
+
+                    int k = idx / planeSize;
+                    int rem = idx - k * planeSize;
+                    int y = rem / nx;
+                    int x = rem - y * nx;
+
+                    for (int dz = -1; dz <= 1; dz++)
+                    {
+                        int nk = k + dz; if (nk < 0 || nk >= nz) continue;
+                        for (int dy = -1; dy <= 1; dy++)
+                        {
+                            int nyy = y + dy; if (nyy < 0 || nyy >= ny) continue;
+                            for (int dx = -1; dx <= 1; dx++)
+                            {
+                                if (dx == 0 && dy == 0 && dz == 0) continue;
+                                int nxx = x + dx; if (nxx < 0 || nxx >= nx) continue;
+                                int nidx = nxx + nx * (nyy + ny * nk);
+                                if (vol[nidx] != 0 && !visited[nidx])
+                                {
+                                    visited[nidx] = true;
+                                    stack.Push(nidx);
+                                }
+                            }
+                        }
+                    }
+                }
+
+                if (comp.Count < minVoxels)
+                {
+                    foreach (int i in comp) vol[i] = 0;
+                    removed++;
+                }
+                else
+                {
+                    kept++;
+                    keptVoxels += comp.Count;
                 }
             }
+
+            log($"  3D components: kept {kept} ({keptVoxels} vox, >= {minVoxels} each), removed {removed} small.");
+        }
+
+        // --- mask <-> volume helpers (handle possible row padding via Mat.Step) ---
+
+        private static void CopySliceIntoVolume(Mat slice, byte[] vol, int offset, int nx, int ny)
+        {
+            unsafe
+            {
+                byte* sp = (byte*)slice.DataPointer;
+                long step = slice.Step();
+                for (int y = 0; y < ny; y++)
+                {
+                    int rowOff = offset + y * nx;
+                    byte* row = sp + y * step;
+                    for (int x = 0; x < nx; x++) vol[rowOff + x] = row[x];
+                }
+            }
+        }
+
+        private static Mat SliceFromVolume(byte[] vol, int offset, int nx, int ny)
+        {
+            Mat slice = new Mat(ny, nx, MatType.CV_8UC1, Scalar.All(0));
+            unsafe
+            {
+                byte* sp = (byte*)slice.DataPointer;
+                long step = slice.Step();
+                for (int y = 0; y < ny; y++)
+                {
+                    int rowOff = offset + y * nx;
+                    byte* row = sp + y * step;
+                    for (int x = 0; x < nx; x++) row[x] = vol[rowOff + x];
+                }
+            }
+            return slice;
         }
 
         // DICOM contours -> pixel polygons (dropping degenerate ones), for OpenCV fill.

@@ -20,18 +20,21 @@ Runs entirely on its own **scratch structure set**, so clinical data is never to
 
 Fixation-gear mechanics (`FixationGear.cs`), all per axial slice in the mask domain:
 
-- **Threshold** — mask voxels at/above the HU threshold.
-- **Erase body** — fill the body's own contours (from `GetContoursOnImagePlane`) with 0, removing
-  the patient interior *before* contouring.
-- **Clean up** — morphological **close** (`CloseRadiusPx`) fills small gaps so thin/low-HU fixation
-  is less patchy, then a connected-component **area filter** (`MinComponentPixelArea`) drops noise
-  specks and small couch fragments.
-- **Write** — extract the remaining contours with OpenCV (same technique as
+- **Threshold + erase body + close (per slice)** — mask voxels at/above the HU threshold, fill the
+  body's own contours (from `GetContoursOnImagePlane`) with 0 to remove the interior, and
+  morphologically **close** (`CloseRadiusPx`) small gaps so thin/low-HU fixation is less patchy.
+  Each cleaned slice is stored into a full 3D volume.
+- **3D component filter** — keep only connected components whose total volume is
+  ≥ `MinComponentVolumeCc`; this drops noise specks and small couch fragments.
+- **Write** — extract the remaining contours per slice with OpenCV (same technique as
   `PalliativeAutoPlan/Segmenter.cs`) and write them onto the structure.
 
-A plain global threshold is simultaneously too greedy (noise/couch are also dense-and-outside-body)
-and too timid (thin/low-HU fixation dips below the threshold → patchy), which the close +
-component-filter pass is meant to counteract. Both are tunable constants in `FixationGear.cs`.
+The size filter is deliberately **3D, not per-slice**: the fixation is thin on any one axial slice
+but large as a 3D object, so a per-slice area filter can't tell it apart from noise and deletes it
+too (that produced an empty structure). Filtering by 3D component volume keeps the fixation while
+removing genuinely small blobs. A plain global threshold is both too greedy (noise/couch are also
+dense-and-outside-body) and too timid (thin/low-HU fixation dips below threshold → patchy), which
+the close + 3D filter counteract. All parameters are tunable constants in `FixationGear.cs`.
 
 Excluding the body in the mask domain (instead of thresholding everything and then
 `SegmentVolume.Sub(body)`) matters for speed: at −550 HU the whole patient is above threshold, so
