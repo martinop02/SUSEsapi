@@ -22,15 +22,16 @@ and overlap the couch), so it uses a **two-pass, couch-assisted** approach:
 4. **Refined fixation** — a much lower threshold (`HU ≥ −900`, catches foam), keeping only voxels
    that are **below (posterior to) the original body** on each axial slice and **outside the couch**.
    The result, `fixation_gear`, is the clean base fixation between patient and couch.
+5. **Merge into body** — OR `fixation_gear` into the `EXTERNAL` body so the external includes it.
 
 Structures left in the set: `body_orig` (saved original), `fixation_coarse` (pass 1), the couch
-supports, the augmented body, and `fixation_gear` (the deliverable).
+supports, the body (now including the fixation), and `fixation_gear` (the deliverable).
 
 Per-pass mechanics (`FixationGear.Segment`, all per axial slice): threshold → erase a list of
 structures' interiors → morphological **close** (`CloseRadiusPx`) → optional **keep-below-reference**
-constraint → store into a 3D volume → **3D connected-component** size filter (`MinComponentVolumeCc`)
-→ write contours (OpenCV, same technique as `PalliativeAutoPlan/Segmenter.cs`). The size filter is
-3D on purpose: fixation is thin per slice but large in 3D, so a 2D per-slice filter would delete it.
+constraint → store into a 3D volume → optional **3D component** size filter (`MinComponentVolumeCc`,
+**disabled by default** — set > 0 to re-enable) → write **outer** contours only (`RetrievalModes.External`,
+so interiors stay solid — no holes carved from small gaps in the mask).
 
 Tunables — thresholds and couch model in `Script.cs` (`CoarseHuThreshold`, `RefinedHuThreshold`,
 `CouchModel`); cleanup in `FixationGear.cs` (`CloseRadiusPx`, `MinComponentVolumeCc`). "Below" is

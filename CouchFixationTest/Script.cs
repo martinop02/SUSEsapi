@@ -23,6 +23,7 @@ namespace VMS.TPS
     ///   3. Add the couch. Because the body now includes the fixation, the couch lands correctly.
     ///   4. Refined segment: a much lower threshold, keeping only voxels below (posterior to) the
     ///      ORIGINAL body and outside the couch -> a clean base-fixation structure.
+    ///   5. Merge the refined fixation into the body.
     ///
     /// Modifies the patient (structure set + structures), so it calls BeginModifications.
     /// Coordinates are ESAPI/DICOM patient (LPS): +x = left, +y = posterior, +z = cranial.
@@ -97,7 +98,13 @@ namespace VMS.TPS
             {
                 log("");
                 LogBounds(fixation, log);
-                log($"Done. Final structure '{fixation.Id}' in the '{set.Id}' set. Tune thresholds and re-run.");
+
+                // 5) Merge the clean fixation into the body so the external includes it.
+                log("Merging fixation into body...");
+                OrInto(body, fixation, log);
+                log($"  Body volume after merge: {SafeVolume(body):0.0} cc.");
+
+                log($"Done. Final structure '{fixation.Id}' (and merged into body) in the '{set.Id}' set. Tune thresholds and re-run.");
             }
         }
 

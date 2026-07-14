@@ -30,8 +30,9 @@ namespace CouchFixationTest
         // --- Cleanup parameters, tune from real cases ---
         // Morphological close radius (px, per slice): fills small gaps so fixation is less patchy.
         private const int CloseRadiusPx = 2;
-        // Drop 3D connected components smaller than this (cc): removes noise and small stray bits.
-        private const double MinComponentVolumeCc = 0.2;
+        // Drop 3D connected components smaller than this (cc). 0 disables the filter (keeps every
+        // voxel, so nothing that should be inside is lost).
+        private const double MinComponentVolumeCc = 0.0;
 
         /// <summary>
         /// Creates (or replaces) a structure <paramref name="id"/> holding every voxel with
@@ -151,10 +152,17 @@ namespace CouchFixationTest
                 }
             }
 
-            double voxelCc = img.XRes * img.YRes * img.ZRes / 1000.0;
-            int minVoxels = Math.Max(1, (int)(MinComponentVolumeCc / voxelCc));
-            log($"  Filtering 3D components (min {MinComponentVolumeCc:0.##} cc = {minVoxels} vox)...");
-            RemoveSmallComponents3D(vol, nx, ny, nz, minVoxels, log);
+            if (MinComponentVolumeCc > 0)
+            {
+                double voxelCc = img.XRes * img.YRes * img.ZRes / 1000.0;
+                int minVoxels = Math.Max(1, (int)(MinComponentVolumeCc / voxelCc));
+                log($"  Filtering 3D components (min {MinComponentVolumeCc:0.##} cc = {minVoxels} vox)...");
+                RemoveSmallComponents3D(vol, nx, ny, nz, minVoxels, log);
+            }
+            else
+            {
+                log("  3D component filter disabled (keeping all voxels).");
+            }
 
             log("  Writing contours...");
             int written = 0;
@@ -163,8 +171,10 @@ namespace CouchFixationTest
                 using (Mat slice = SliceFromVolume(vol, k * planeSize, nx, ny))
                 {
                     if (Cv2.CountNonZero(slice) == 0) continue;
+                    // External = outer contours only, so interiors stay solid (no holes carved into
+                    // the structure from small gaps in the mask).
                     Point[][] contours = Cv2.FindContoursAsArray(
-                        slice, RetrievalModes.Tree, ContourApproximationModes.ApproxSimple);
+                        slice, RetrievalModes.External, ContourApproximationModes.ApproxSimple);
                     foreach (Point[] contour in contours)
                     {
                         if (contour.Length < 3) continue;
