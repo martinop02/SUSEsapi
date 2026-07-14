@@ -10,66 +10,45 @@ using Image = VMS.TPS.Common.Model.API.Image;
 namespace CouchFixationTest
 {
     /// <summary>
-    /// Builds a "fixation gear" structure: every voxel with HU >= <paramref name="huThreshold"/>
-    /// that is NOT inside the body.
+    /// Segments dense material into a structure by HU threshold, with optional spatial constraints.
+    /// One method serves both passes of the couch-fixation workflow:
     ///
-    /// Pipeline:
-    ///   1. Per slice, build a binary mask: threshold the CT, erase the body (fill its own contours),
-    ///      and morphologically close small gaps so thin/low-HU fixation is less patchy. Store each
-    ///      cleaned slice into a full 3D volume.
-    ///   2. Filter the 3D volume by connected-component size: keep only components whose total volume
-    ///      is >= MinComponentVolumeCc. This removes noise specks and small couch fragments WITHOUT
-    ///      losing the fixation — which is thin on any single slice but large in 3D (a 2D per-slice
-    ///      size filter can't tell those apart and wrongly deletes the fixation too).
-    ///   3. Per slice, extract the remaining contours with OpenCV (same technique as Segmenter.cs)
-    ///      and write them onto the structure.
+    ///   Coarse pass:  threshold at ~-550, erase the body -> rough fixation (later OR'd into body so
+    ///                 the couch places correctly).
+    ///   Refined pass: threshold much lower, erase the (original) body and the couch, and keep only
+    ///                 voxels posterior to (below) the original body -> clean base fixation.
     ///
-    /// The body is excluded in the mask domain (not "threshold everything then SegmentVolume.Sub"):
-    /// at -550 HU the whole patient is above threshold, so the naive approach writes thousands of
-    /// body/hole contours via the expensive AddContourOnImagePlane and then discards them.
-    ///
-    /// What remains is dense material outside the patient: fixation devices, masks/straps, and (if
-    /// imaged) the couch/table. Tune the threshold and the cleanup parameters from real cases.
+    /// Per axial slice: build a threshold mask, fill the "erase" structures' contours with 0,
+    /// morphologically close small gaps, optionally drop everything not below a reference structure,
+    /// and store into a 3D volume. Then a 3D connected-component size filter removes noise, and the
+    /// remaining contours are written back (same OpenCV technique as PalliativeAutoPlan/Segmenter.cs).
+    /// The size filter is 3D on purpose: fixation is thin per slice but large as a 3D object, so a
+    /// 2D per-slice filter would delete it.
     /// </summary>
     public static class FixationGear
     {
-        public const string StructureId = "fixation_gear";
-
         // --- Cleanup parameters, tune from real cases ---
         // Morphological close radius (px, per slice): fills small gaps so fixation is less patchy.
         private const int CloseRadiusPx = 2;
-        // Drop 3D connected components smaller than this (cc): removes noise and small couch bits
-        // while keeping the fixation, which is large in 3D even though thin per slice.
+        // Drop 3D connected components smaller than this (cc): removes noise and small stray bits.
         private const double MinComponentVolumeCc = 0.2;
 
         /// <summary>
-        /// Creates (or replaces) the fixation-gear structure in <paramref name="set"/>. Requires the
-        /// patient to already be in modifications mode. Returns the created structure, or null.
+        /// Creates (or replaces) a structure <paramref name="id"/> holding every voxel with
+        /// HU >= <paramref name="huThreshold"/>, minus the interiors of <paramref name="eraseStructures"/>,
+        /// optionally restricted to voxels lying below (posterior to) <paramref name="belowReference"/>
+        /// on each axial slice. Requires the patient to be in modifications mode. Returns it, or null.
         /// </summary>
-        public static Structure Create(StructureSet set, Image image, Structure body, double huThreshold, Action<string> log)
+        public static Structure Segment(
+            StructureSet set, Image image, string id, System.Windows.Media.Color color,
+            double huThreshold, IList<Structure> eraseStructures, Structure belowReference,
+            Action<string> log)
         {
-            if (image == null) { log("  No image on the structure set; cannot threshold."); return null; }
-            if (body == null) { log("  No body structure; cannot exclude the patient interior."); return null; }
+            if (image == null) { log("  No image; cannot threshold."); return null; }
 
-            // Fresh structure each run: remove a previous one if we can, otherwise use a fallback id.
-            string id = StructureId;
-            Structure existing = set.Structures.FirstOrDefault(s => s.Id == id);
-            if (existing != null)
-            {
-                if (set.CanRemoveStructure(existing))
-                {
-                    set.RemoveStructure(existing);
-                    log($"  Removed previous '{id}'.");
-                }
-                else
-                {
-                    id = id + "_ny";
-                    log($"  '{StructureId}' cannot be removed (approved?); using '{id}' instead.");
-                }
-            }
-
-            Structure fixation = set.AddStructure("CONTROL", id);
-            fixation.Color = System.Windows.Media.Color.FromRgb(0, 220, 220); // cyan, easy to spot
+            Structure fixation = ReplaceStructure(set, id, log);
+            if (fixation == null) return null;
+            fixation.Color = color;
 
             // HU is a linear function of the stored voxel value; invert it once instead of calling
             // VoxelToDisplayValue per voxel (millions of calls otherwise).
@@ -85,21 +64,41 @@ namespace CouchFixationTest
             bool keepAtOrAbove = slope > 0; // normal CT: higher stored value = higher HU
             log($"  HU threshold {huThreshold:0.#} -> raw voxel {rawThreshold:0.#} (keep {(keepAtOrAbove ? ">=" : "<=")}).");
 
-            BuildFixation(fixation, image, body, rawThreshold, keepAtOrAbove, log);
+            BuildVolume(fixation, image, rawThreshold, keepAtOrAbove,
+                        eraseStructures ?? new Structure[0], belowReference, log);
             log($"  Volume: {SafeVolume(fixation):0.0} cc.");
-
             return fixation;
         }
 
-        private static void BuildFixation(Structure fixation, Image img, Structure body, double rawThreshold, bool keepAtOrAbove, Action<string> log)
+        private static Structure ReplaceStructure(StructureSet set, string id, Action<string> log)
+        {
+            Structure existing = set.Structures.FirstOrDefault(s => s.Id == id);
+            if (existing != null)
+            {
+                if (set.CanRemoveStructure(existing))
+                {
+                    set.RemoveStructure(existing);
+                    log($"  Removed previous '{id}'.");
+                }
+                else
+                {
+                    id = id + "_ny";
+                    log($"  '{id}' base cannot be removed (approved?); using a new id.");
+                }
+            }
+            return set.AddStructure("CONTROL", id);
+        }
+
+        private static void BuildVolume(
+            Structure fixation, Image img, double rawThreshold, bool keepAtOrAbove,
+            IList<Structure> eraseStructures, Structure belowReference, Action<string> log)
         {
             int nx = img.XSize, ny = img.YSize, nz = img.ZSize;
             int planeSize = nx * ny;
-            byte[] vol = new byte[planeSize * nz];   // 0/255 cleaned mask, whole volume
+            byte[] vol = new byte[planeSize * nz];
             int[,] plane = new int[nx, ny];
             int progressEvery = Math.Max(1, nz / 5);
 
-            // Pass 1: per-slice threshold -> erase body -> close -> store into vol.
             log($"  Thresholding + cleaning {nz} slices...");
             for (int k = 0; k < nz; k++)
             {
@@ -120,30 +119,43 @@ namespace CouchFixationTest
                             }
                     }
 
-                    Point[][] bodyPolys = ToPixelPolygons(img, body.GetContoursOnImagePlane(k));
-                    if (bodyPolys.Length > 0)
-                        Cv2.FillPoly(slice, bodyPolys, Scalar.All(0));
+                    // Erase each structure's interior (fill its contours with 0).
+                    var erasePolys = new List<Point[][]>();
+                    foreach (Structure s in eraseStructures)
+                    {
+                        Point[][] polys = ToPixelPolygons(img, s.GetContoursOnImagePlane(k));
+                        if (polys.Length > 0)
+                        {
+                            Cv2.FillPoly(slice, polys, Scalar.All(0));
+                            erasePolys.Add(polys);
+                        }
+                    }
 
                     if (CloseRadiusPx > 0)
                     {
                         int d = 2 * CloseRadiusPx + 1;
                         using (Mat kernel = Cv2.GetStructuringElement(MorphShapes.Ellipse, new Size(d, d)))
                             Cv2.MorphologyEx(slice, slice, MorphTypes.Close, kernel);
-                        if (bodyPolys.Length > 0)           // close can bleed into the body; re-erase
-                            Cv2.FillPoly(slice, bodyPolys, Scalar.All(0));
+                        foreach (Point[][] polys in erasePolys)   // undo close bleed into erased regions
+                            Cv2.FillPoly(slice, polys, Scalar.All(0));
+                    }
+
+                    // Keep only voxels below (posterior to) the reference structure, per column.
+                    if (belowReference != null)
+                    {
+                        Point[][] refPolys = ToPixelPolygons(img, belowReference.GetContoursOnImagePlane(k));
+                        KeepBelowReference(slice, refPolys, nx, ny);
                     }
 
                     CopySliceIntoVolume(slice, vol, k * planeSize, nx, ny);
                 }
             }
 
-            // Pass 2: 3D connected-component size filter.
-            double voxelCc = img.XRes * img.YRes * img.ZRes / 1000.0;   // mm^3 -> cc
+            double voxelCc = img.XRes * img.YRes * img.ZRes / 1000.0;
             int minVoxels = Math.Max(1, (int)(MinComponentVolumeCc / voxelCc));
             log($"  Filtering 3D components (min {MinComponentVolumeCc:0.##} cc = {minVoxels} vox)...");
             RemoveSmallComponents3D(vol, nx, ny, nz, minVoxels, log);
 
-            // Pass 3: contour each slice from the cleaned volume and write.
             log("  Writing contours...");
             int written = 0;
             for (int k = 0; k < nz; k++)
@@ -151,7 +163,6 @@ namespace CouchFixationTest
                 using (Mat slice = SliceFromVolume(vol, k * planeSize, nx, ny))
                 {
                     if (Cv2.CountNonZero(slice) == 0) continue;
-
                     Point[][] contours = Cv2.FindContoursAsArray(
                         slice, RetrievalModes.Tree, ContourApproximationModes.ApproxSimple);
                     foreach (Point[] contour in contours)
@@ -163,8 +174,34 @@ namespace CouchFixationTest
                     }
                 }
             }
-
             log($"  Wrote {written} contour(s) across {nz} slices.");
+        }
+
+        // Zero any mask pixel that is not strictly below the reference on its column. "Below" = larger
+        // pixel-row = posterior for head-first-supine; flip the comparison if your orientation differs.
+        private static void KeepBelowReference(Mat slice, Point[][] refPolys, int nx, int ny)
+        {
+            if (refPolys.Length == 0) { slice.SetTo(Scalar.All(0)); return; } // no reference here -> nothing below
+
+            using (Mat refMask = new Mat(ny, nx, MatType.CV_8UC1, Scalar.All(0)))
+            {
+                Cv2.FillPoly(refMask, refPolys, Scalar.All(255));
+                unsafe
+                {
+                    byte* rp = (byte*)refMask.DataPointer; long rstep = refMask.Step();
+                    byte* sp = (byte*)slice.DataPointer; long sstep = slice.Step();
+                    for (int x = 0; x < nx; x++)
+                    {
+                        int bottom = -1;
+                        for (int y = 0; y < ny; y++)
+                            if (rp[y * rstep + x] != 0) bottom = y;   // lowest reference row in this column
+
+                        int cut = bottom < 0 ? ny - 1 : bottom;       // no reference -> clear the column
+                        for (int y = 0; y <= cut; y++)
+                            sp[y * sstep + x] = 0;                     // keep only rows strictly below 'bottom'
+                    }
+                }
+            }
         }
 
         // 26-connected component labelling over the whole volume; zero any component with fewer than

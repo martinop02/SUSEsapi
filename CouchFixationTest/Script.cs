@@ -1,7 +1,9 @@
 using System;
+using System.Collections.Generic;
 using System.Linq;
 using System.Reflection;
 using System.Runtime.CompilerServices;
+using System.Windows.Media;
 using System.Windows.Media.Media3D;
 using CouchFixationTest;
 using VMS.TPS.Common.Model.API;
@@ -12,27 +14,27 @@ using VMS.TPS.Common.Model.Types;
 namespace VMS.TPS
 {
     /// <summary>
-    /// CouchFixationTest — an isolated harness for the "couch is placed wrong when the patient
-    /// has fixation gear" problem.
+    /// CouchFixationTest — isolates the "couch placed wrong with fixation gear" problem.
     ///
-    /// Workflow (all on a dedicated scratch structure set, so the clinical data is untouched):
-    ///   1. Create (or reuse) a structure set called "FixationTest" on the open image.
-    ///   2. Add the body with the native ESAPI search (CreateAndSearchBody).
-    ///   3. Build the fixation-gear structure: every voxel with HU >= -550 that is not inside the
-    ///      body (see <see cref="CouchFixationTest.FixationGear"/>).
+    /// Two-pass fixation extraction (all on a scratch "FixationTest" structure set):
+    ///   1. Coarse segment: HU >= CoarseHuThreshold, minus body -> rough/patchy fixation.
+    ///   2. Save the original body, then OR the coarse fixation into the body so the external bulges
+    ///      to include the fixation bulk.
+    ///   3. Add the couch. Because the body now includes the fixation, the couch lands correctly.
+    ///   4. Refined segment: a much lower threshold, keeping only voxels below (posterior to) the
+    ///      ORIGINAL body and outside the couch -> a clean base-fixation structure.
     ///
-    /// This modifies the patient (new structure set + structures), so it calls BeginModifications.
-    /// Coordinates are ESAPI/DICOM patient (LPS): +x = patient left, +y = posterior, +z = cranial.
+    /// Modifies the patient (structure set + structures), so it calls BeginModifications.
+    /// Coordinates are ESAPI/DICOM patient (LPS): +x = left, +y = posterior, +z = cranial.
     /// </summary>
     public class Script
     {
         public Script() { }
 
-        // Dedicated scratch structure set. Reused across runs so the clinical set is never touched.
         private const string SetId = "FixationTest";
-
-        // Starting HU threshold for "denser than air / soft tissue" — tune this from real cases.
-        private const double HuThreshold = -550.0;
+        private const double CoarseHuThreshold = -550.0;   // rough pass (dense fixation + couch)
+        private const double RefinedHuThreshold = -900.0;  // final pass, spatially constrained (catches foam)
+        private const string CouchModel = "Exact_IGRT_Couch_Top_thick"; // must match Eclipse (as PalliativeAutoPlan)
 
         [MethodImpl(MethodImplOptions.NoInlining)]
         public void Execute(ScriptContext context)
@@ -51,35 +53,55 @@ namespace VMS.TPS
             Image image = context.Image
                        ?? context.StructureSet?.Image
                        ?? context.PlanSetup?.StructureSet?.Image;
-            if (image == null) { log("No image open. Open an image (or a plan/structure set). Aborting."); return; }
+            if (image == null) { log("No image open. Aborting."); return; }
             log($"Image: {image.Id}  orientation: {image.ImagingOrientation}  size: {image.XSize}x{image.YSize}x{image.ZSize}");
 
             patient.BeginModifications();
 
-            // 1) Dedicated structure set on this image.
             StructureSet set = GetOrCreateSet(patient, image, log);
             if (set == null) { log("Could not obtain a structure set. Aborting."); return; }
 
-            // 2) Body via native ESAPI search.
             Structure body = EnsureBody(set, log);
-            if (body == null) { log("No body available; cannot exclude the patient interior. Aborting."); return; }
+            if (body == null) { log("No body available. Aborting."); return; }
             LogBounds(body, log);
             log("");
 
-            // 3) Fixation gear.
-            log($"Building '{FixationGear.StructureId}' at HU >= {HuThreshold:0.#}, excluding body...");
-            Structure fixation = FixationGear.Create(set, image, body, HuThreshold, log);
+            // 1) Coarse fixation.
+            log($"[1/4] Coarse fixation (HU >= {CoarseHuThreshold:0.#}, minus body)...");
+            Structure coarse = FixationGear.Segment(set, set.Image, "fixation_coarse", Colors.Gray,
+                                                    CoarseHuThreshold, new[] { body }, null, log);
+            if (coarse == null) { log("Coarse pass failed. Aborting."); return; }
+            log("");
+
+            // 2) Preserve the original body, then OR the coarse fixation into the body.
+            log("[2/4] Saving original body and merging coarse fixation into body...");
+            Structure bodyOrig = CopyStructure(set, body, "body_orig", Colors.DimGray, log);
+            OrInto(body, coarse, log);
+            log($"  Body volume after merge: {SafeVolume(body):0.0} cc.");
+            log("");
+
+            // 3) Add the couch (now that body includes the fixation bulk, it places correctly).
+            log("[3/4] Adding couch...");
+            IList<Structure> couch = EnsureCouch(set, log);
+            log("");
+
+            // 4) Refined fixation: low threshold, below the ORIGINAL body, outside the couch.
+            log($"[4/4] Refined fixation (HU >= {RefinedHuThreshold:0.#}, below original body, minus couch)...");
+            var erase = new List<Structure> { bodyOrig };
+            erase.AddRange(couch);
+            Structure fixation = FixationGear.Segment(set, set.Image, "fixation_gear",
+                                                      Color.FromRgb(0, 220, 220),
+                                                      RefinedHuThreshold, erase, bodyOrig, log);
 
             if (fixation != null)
             {
                 log("");
                 LogBounds(fixation, log);
-                log($"Done. Review '{fixation.Id}' in the '{set.Id}' structure set; tune the threshold and re-run.");
+                log($"Done. Final structure '{fixation.Id}' in the '{set.Id}' set. Tune thresholds and re-run.");
             }
         }
 
-        // Reuse the FixationTest set if it already exists on this image (so re-runs stay clean and
-        // don't pile up structure sets); otherwise create a new one and name it.
+        // Reuse the FixationTest set on this image if present (keeps re-runs clean); else create it.
         private static StructureSet GetOrCreateSet(Patient patient, Image image, Action<string> log)
         {
             StructureSet existing = patient.StructureSets
@@ -91,15 +113,8 @@ namespace VMS.TPS
             }
 
             StructureSet set = image.CreateNewStructureSet();
-            try
-            {
-                set.Id = SetId;
-                log($"Created structure set '{set.Id}'.");
-            }
-            catch (Exception ex)
-            {
-                log($"Created structure set '{set.Id}' (could not rename to '{SetId}': {ex.Message}).");
-            }
+            try { set.Id = SetId; log($"Created structure set '{set.Id}'."); }
+            catch (Exception ex) { log($"Created structure set '{set.Id}' (rename to '{SetId}' failed: {ex.Message})."); }
             return set;
         }
 
@@ -107,11 +122,7 @@ namespace VMS.TPS
         private static Structure EnsureBody(StructureSet set, Action<string> log)
         {
             Structure body = set.Structures.FirstOrDefault(s => s.DicomType == "EXTERNAL" && !s.IsEmpty);
-            if (body != null)
-            {
-                log($"Body already present: '{body.Id}'.");
-                return body;
-            }
+            if (body != null) { log($"Body already present: '{body.Id}'."); return body; }
 
             try
             {
@@ -125,6 +136,77 @@ namespace VMS.TPS
                 log("ERROR: could not create a body structure: " + ex.Message);
                 return null;
             }
+        }
+
+        // Copies a structure's volume into a fresh structure with the given id.
+        private static Structure CopyStructure(StructureSet set, Structure src, string id, Color color, Action<string> log)
+        {
+            Structure existing = set.Structures.FirstOrDefault(s => s.Id == id);
+            if (existing != null && set.CanRemoveStructure(existing)) set.RemoveStructure(existing);
+
+            Structure copy = set.AddStructure("CONTROL", id);
+            copy.SegmentVolume = src.SegmentVolume;
+            copy.Color = color;
+            log($"  Saved '{src.Id}' as '{copy.Id}'.");
+            return copy;
+        }
+
+        // target = target OR add (match resolution first).
+        private static void OrInto(Structure target, Structure add, Action<string> log)
+        {
+            try
+            {
+                if (add.IsHighResolution && !target.IsHighResolution) target.ConvertToHighResolution();
+                target.SegmentVolume = target.SegmentVolume.Or(add.SegmentVolume);
+            }
+            catch (Exception ex)
+            {
+                log("  WARNING: could not OR into '" + target.Id + "': " + ex.Message);
+            }
+        }
+
+        // Adds the treatment couch, mirroring PalliativeAutoPlan's EnsureCouch. Returns the couch
+        // (SUPPORT) structures present afterwards.
+        private static IList<Structure> EnsureCouch(StructureSet set, Action<string> log)
+        {
+            if (set.Structures.Any(s => s.DicomType == "SUPPORT" && !s.IsEmpty))
+                log("  Couch (support) already present.");
+            else
+            {
+                string canError;
+                if (!set.CanAddCouchStructures(out canError))
+                {
+                    log("  Cannot add couch structures: " + canError);
+                    return new List<Structure>();
+                }
+
+                try
+                {
+                    IReadOnlyList<Structure> added;
+                    bool imageResized;
+                    string error;
+                    bool ok = set.AddCouchStructures(
+                        CouchModel,
+                        PatientOrientation.NoOrientation,
+                        RailPosition.Out, RailPosition.Out,
+                        null, null, null,
+                        out added, out imageResized, out error);
+
+                    if (ok) log($"  Added couch '{CouchModel}' ({added.Count} structure(s)){(imageResized ? " — image resized." : ".")}");
+                    else log($"  Could not add couch '{CouchModel}': {error} (check the id matches Eclipse).");
+                }
+                catch (Exception ex)
+                {
+                    log("  WARNING: couch creation failed: " + ex.Message);
+                }
+            }
+
+            return set.Structures.Where(s => s.DicomType == "SUPPORT" && !s.IsEmpty).ToList();
+        }
+
+        private static double SafeVolume(Structure s)
+        {
+            try { return s.Volume; } catch { return double.NaN; }
         }
 
         private static void LogBounds(Structure s, Action<string> log)
