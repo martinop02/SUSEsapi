@@ -15,16 +15,21 @@ namespace VMS.TPS
     /// CouchFixationTest — an isolated harness for the "couch is placed wrong when the patient
     /// has fixation gear" problem.
     ///
-    /// Current step: extract the fixation gear as its own structure so we can reason about it.
-    /// It is defined as every voxel above a Hounsfield-unit threshold that is NOT inside the body
-    /// (see <see cref="CouchFixationTest.FixationGear"/>). Starting threshold: -550 HU.
+    /// Workflow (all on a dedicated scratch structure set, so the clinical data is untouched):
+    ///   1. Create (or reuse) a structure set called "FixationTest" on the open image.
+    ///   2. Add the body with the native ESAPI search (CreateAndSearchBody).
+    ///   3. Build the fixation-gear structure: every voxel with HU >= -550 that is not inside the
+    ///      body (see <see cref="CouchFixationTest.FixationGear"/>).
     ///
-    /// This modifies the plan (it adds a structure), so it calls BeginModifications. Coordinates are
-    /// ESAPI/DICOM patient (LPS): +x = patient left, +y = posterior, +z = cranial.
+    /// This modifies the patient (new structure set + structures), so it calls BeginModifications.
+    /// Coordinates are ESAPI/DICOM patient (LPS): +x = patient left, +y = posterior, +z = cranial.
     /// </summary>
     public class Script
     {
         public Script() { }
+
+        // Dedicated scratch structure set. Reused across runs so the clinical set is never touched.
+        private const string SetId = "FixationTest";
 
         // Starting HU threshold for "denser than air / soft tissue" — tune this from real cases.
         private const double HuThreshold = -550.0;
@@ -43,40 +48,82 @@ namespace VMS.TPS
             if (patient == null) { log("No patient is open. Aborting."); return; }
             log($"Patient: {patient.Id}");
 
-            StructureSet set = context.StructureSet ?? context.PlanSetup?.StructureSet;
-            if (set == null)
-            {
-                log("No structure set in context (open a plan or structure set). Aborting.");
-                return;
-            }
-            log($"Structure set: {set.Id}");
+            Image image = context.Image
+                       ?? context.StructureSet?.Image
+                       ?? context.PlanSetup?.StructureSet?.Image;
+            if (image == null) { log("No image open. Open an image (or a plan/structure set). Aborting."); return; }
+            log($"Image: {image.Id}  orientation: {image.ImagingOrientation}  size: {image.XSize}x{image.YSize}x{image.ZSize}");
 
-            Image img = set.Image;
-            if (img == null) { log("Structure set has no image. Aborting."); return; }
-            log($"Image: {img.Id}  orientation: {img.ImagingOrientation}  size: {img.XSize}x{img.YSize}x{img.ZSize}");
-
-            Structure body = set.Structures.FirstOrDefault(s => s.DicomType == "EXTERNAL" && !s.IsEmpty);
-            if (body == null)
-            {
-                log("No non-empty EXTERNAL (BODY) structure found — needed to exclude the patient. Aborting.");
-                return;
-            }
-            LogBounds(body, log);
-            foreach (Structure c in set.Structures.Where(s => s.DicomType == "SUPPORT" && !s.IsEmpty))
-                LogBounds(c, log);
-            log("");
-
-            // Adding a structure is a modification.
             patient.BeginModifications();
 
+            // 1) Dedicated structure set on this image.
+            StructureSet set = GetOrCreateSet(patient, image, log);
+            if (set == null) { log("Could not obtain a structure set. Aborting."); return; }
+
+            // 2) Body via native ESAPI search.
+            Structure body = EnsureBody(set, log);
+            if (body == null) { log("No body available; cannot exclude the patient interior. Aborting."); return; }
+            LogBounds(body, log);
+            log("");
+
+            // 3) Fixation gear.
             log($"Building '{FixationGear.StructureId}' at HU >= {HuThreshold:0.#}, excluding body...");
-            Structure fixation = FixationGear.Create(set, img, body, HuThreshold, log);
+            Structure fixation = FixationGear.Create(set, image, body, HuThreshold, log);
 
             if (fixation != null)
             {
                 log("");
                 LogBounds(fixation, log);
-                log("Done. Review the structure in Eclipse; tune the threshold and re-run as needed.");
+                log($"Done. Review '{fixation.Id}' in the '{set.Id}' structure set; tune the threshold and re-run.");
+            }
+        }
+
+        // Reuse the FixationTest set if it already exists on this image (so re-runs stay clean and
+        // don't pile up structure sets); otherwise create a new one and name it.
+        private static StructureSet GetOrCreateSet(Patient patient, Image image, Action<string> log)
+        {
+            StructureSet existing = patient.StructureSets
+                .FirstOrDefault(s => s.Id == SetId && s.Image != null && s.Image.Id == image.Id);
+            if (existing != null)
+            {
+                log($"Reusing existing structure set '{existing.Id}'.");
+                return existing;
+            }
+
+            StructureSet set = image.CreateNewStructureSet();
+            try
+            {
+                set.Id = SetId;
+                log($"Created structure set '{set.Id}'.");
+            }
+            catch (Exception ex)
+            {
+                log($"Created structure set '{set.Id}' (could not rename to '{SetId}': {ex.Message}).");
+            }
+            return set;
+        }
+
+        // Native ESAPI body creation, mirroring PalliativeAutoPlan's EnsureExternalBody.
+        private static Structure EnsureBody(StructureSet set, Action<string> log)
+        {
+            Structure body = set.Structures.FirstOrDefault(s => s.DicomType == "EXTERNAL" && !s.IsEmpty);
+            if (body != null)
+            {
+                log($"Body already present: '{body.Id}'.");
+                return body;
+            }
+
+            try
+            {
+                SearchBodyParameters p = set.GetDefaultSearchBodyParameters();
+                body = set.CreateAndSearchBody(p);
+                log($"Created body '{body.Id}' via CreateAndSearchBody.");
+                return body;
+            }
+            catch (Exception ex)
+            {
+                log("ERROR: could not create a body structure: " + ex.Message);
+                return null;
             }
         }
 
