@@ -28,11 +28,11 @@ namespace CouchFixationTest
     public static class FixationGear
     {
         // --- Cleanup parameters, tune from real cases ---
-        // Morphological close radius (px, per slice): fills small gaps so fixation is less patchy.
+        // Base morphological close radius (px, per slice): fills small gaps / de-patches.
         private const int CloseRadiusPx = 2;
-        // Drop 3D connected components smaller than this (cc). 0 disables the filter (keeps every
-        // voxel, so nothing that should be inside is lost).
-        private const double MinComponentVolumeCc = 0.0;
+        // Larger close radius used when fillGaps is set: bridges the broken outline of the board so
+        // the (External) contour then fills its interior solid.
+        private const int FillCloseRadiusPx = 12;
 
         /// <summary>
         /// Creates (or replaces) a structure <paramref name="id"/> holding every voxel with
@@ -43,7 +43,7 @@ namespace CouchFixationTest
         public static Structure Segment(
             StructureSet set, Image image, string id, System.Windows.Media.Color color,
             double huThreshold, IList<Structure> eraseStructures, Structure belowReference,
-            Action<string> log)
+            double minComponentCc, bool fillGaps, Action<string> log)
         {
             if (image == null) { log("  No image; cannot threshold."); return null; }
 
@@ -66,7 +66,7 @@ namespace CouchFixationTest
             log($"  HU threshold {huThreshold:0.#} -> raw voxel {rawThreshold:0.#} (keep {(keepAtOrAbove ? ">=" : "<=")}).");
 
             BuildVolume(fixation, image, rawThreshold, keepAtOrAbove,
-                        eraseStructures ?? new Structure[0], belowReference, log);
+                        eraseStructures ?? new Structure[0], belowReference, minComponentCc, fillGaps, log);
             log($"  Volume: {SafeVolume(fixation):0.0} cc.");
             return fixation;
         }
@@ -92,13 +92,15 @@ namespace CouchFixationTest
 
         private static void BuildVolume(
             Structure fixation, Image img, double rawThreshold, bool keepAtOrAbove,
-            IList<Structure> eraseStructures, Structure belowReference, Action<string> log)
+            IList<Structure> eraseStructures, Structure belowReference,
+            double minComponentCc, bool fillGaps, Action<string> log)
         {
             int nx = img.XSize, ny = img.YSize, nz = img.ZSize;
             int planeSize = nx * ny;
             byte[] vol = new byte[planeSize * nz];
             int[,] plane = new int[nx, ny];
             int progressEvery = Math.Max(1, nz / 5);
+            int closeRadius = fillGaps ? FillCloseRadiusPx : CloseRadiusPx;
 
             log($"  Thresholding + cleaning {nz} slices...");
             for (int k = 0; k < nz; k++)
@@ -132,9 +134,9 @@ namespace CouchFixationTest
                         }
                     }
 
-                    if (CloseRadiusPx > 0)
+                    if (closeRadius > 0)
                     {
-                        int d = 2 * CloseRadiusPx + 1;
+                        int d = 2 * closeRadius + 1;
                         using (Mat kernel = Cv2.GetStructuringElement(MorphShapes.Ellipse, new Size(d, d)))
                             Cv2.MorphologyEx(slice, slice, MorphTypes.Close, kernel);
                         foreach (Point[][] polys in erasePolys)   // undo close bleed into erased regions
@@ -152,11 +154,11 @@ namespace CouchFixationTest
                 }
             }
 
-            if (MinComponentVolumeCc > 0)
+            if (minComponentCc > 0)
             {
                 double voxelCc = img.XRes * img.YRes * img.ZRes / 1000.0;
-                int minVoxels = Math.Max(1, (int)(MinComponentVolumeCc / voxelCc));
-                log($"  Filtering 3D components (min {MinComponentVolumeCc:0.##} cc = {minVoxels} vox)...");
+                int minVoxels = Math.Max(1, (int)(minComponentCc / voxelCc));
+                log($"  Filtering 3D components (min {minComponentCc:0.##} cc = {minVoxels} vox)...");
                 RemoveSmallComponents3D(vol, nx, ny, nz, minVoxels, log);
             }
             else

@@ -28,14 +28,21 @@ Structures left in the set: `body_orig` (saved original), `fixation_coarse` (pas
 supports, the body (now including the fixation), and `fixation_gear` (the deliverable).
 
 Per-pass mechanics (`FixationGear.Segment`, all per axial slice): threshold → erase a list of
-structures' interiors → morphological **close** (`CloseRadiusPx`) → optional **keep-below-reference**
-constraint → store into a 3D volume → optional **3D component** size filter (`MinComponentVolumeCc`,
-**disabled by default** — set > 0 to re-enable) → write **outer** contours only (`RetrievalModes.External`,
-so interiors stay solid — no holes carved from small gaps in the mask).
+structures' interiors → morphological **close** → optional **keep-below-reference** constraint →
+store into a 3D volume → optional **3D component** size filter → write **outer** contours only
+(`RetrievalModes.External`, so interiors stay solid — no holes carved from small gaps in the mask).
 
-Tunables — thresholds and couch model in `Script.cs` (`CoarseHuThreshold`, `RefinedHuThreshold`,
-`CouchModel`); cleanup in `FixationGear.cs` (`CloseRadiusPx`, `MinComponentVolumeCc`). "Below" is
-larger pixel-row = posterior (head-first-supine); flip it in `KeepBelowReference` if needed.
+Two of those are configured per pass via `Segment(...)` arguments:
+
+- **3D size filter** (`minComponentCc`): **on for the coarse pass** (`CoarseMinComponentCc`, cleans
+  the bulk so the couch places well), **off for the refined pass** (keep every voxel).
+- **Gap-fill** (`fillGaps`): **on for the refined pass**. Uses a larger close (`FillCloseRadiusPx`)
+  to bridge the board's broken outline into a closed loop, which `External` then fills solid.
+
+Tunables — thresholds/couch model in `Script.cs` (`CoarseHuThreshold`, `RefinedHuThreshold`,
+`CoarseMinComponentCc`, `CouchModel`); close radii in `FixationGear.cs` (`CloseRadiusPx`,
+`FillCloseRadiusPx`). "Below" is larger pixel-row = posterior (head-first-supine); flip it in
+`KeepBelowReference` if needed.
 
 ## How to run
 
