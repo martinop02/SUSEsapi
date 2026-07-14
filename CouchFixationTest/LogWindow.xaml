@@ -1,0 +1,27 @@
+<Window x:Class="CouchFixationTest.LogWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Couch fixation test" Height="560" Width="820"
+        WindowStartupLocation="CenterScreen" Background="#FF1E1E1E">
+
+    <DockPanel>
+        <Border DockPanel.Dock="Top" Background="#FF2D2D30" Padding="12,8">
+            <TextBlock x:Name="TitleText" Text="Couch fixation test — running..."
+                       Foreground="#FFEEEEEE" FontWeight="Bold" FontSize="13" />
+        </Border>
+
+        <Border DockPanel.Dock="Bottom" Background="#FF2D2D30" Padding="12,8">
+            <Button x:Name="CloseButton" Content="Close" Width="90" Height="26"
+                    HorizontalAlignment="Right" IsEnabled="False" Click="CloseButton_Click" />
+        </Border>
+
+        <TextBox x:Name="LogBox" Margin="8"
+                 Background="#FF1E1E1E" Foreground="#FFDCDCDC"
+                 FontFamily="Consolas" FontSize="12"
+                 IsReadOnly="True" IsReadOnlyCaretVisible="False"
+                 BorderThickness="0"
+                 TextWrapping="NoWrap" AcceptsReturn="True"
+                 VerticalScrollBarVisibility="Auto"
+                 HorizontalScrollBarVisibility="Auto" />
+    </DockPanel>
+</Window>

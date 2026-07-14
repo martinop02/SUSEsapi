@@ -64,6 +64,7 @@ structures.
 - `Script.cs` — entry point (`VMS.TPS.Script`): scratch-set + body setup, threshold constant,
   orchestration + logging.
 - `FixationGear.cs` — the HU-threshold + body-exclusion structure builder.
-- `LogWindow.cs` — minimal code-only WPF log window.
+- `LogWindow.xaml` / `LogWindow.xaml.cs` — WPF log window (same proven pattern as
+  PalliativeAutoPlan's; shows first, runs the work in `OnContentRendered`, pumps repaints).
 - ESAPI assemblies are shared from the repo-root `..\ESAPI\` folder; OpenCvSharp comes via NuGet
   (`packages.config`).

@@ -97,10 +97,13 @@ namespace CouchFixationTest
             int planeSize = nx * ny;
             byte[] vol = new byte[planeSize * nz];   // 0/255 cleaned mask, whole volume
             int[,] plane = new int[nx, ny];
+            int progressEvery = Math.Max(1, nz / 5);
 
             // Pass 1: per-slice threshold -> erase body -> close -> store into vol.
+            log($"  Thresholding + cleaning {nz} slices...");
             for (int k = 0; k < nz; k++)
             {
+                if (k % progressEvery == 0 && k > 0) log($"    ...slice {k}/{nz}");
                 img.GetVoxels(k, plane);
                 using (Mat slice = new Mat(ny, nx, MatType.CV_8UC1, Scalar.All(0)))
                 {
@@ -137,9 +140,11 @@ namespace CouchFixationTest
             // Pass 2: 3D connected-component size filter.
             double voxelCc = img.XRes * img.YRes * img.ZRes / 1000.0;   // mm^3 -> cc
             int minVoxels = Math.Max(1, (int)(MinComponentVolumeCc / voxelCc));
+            log($"  Filtering 3D components (min {MinComponentVolumeCc:0.##} cc = {minVoxels} vox)...");
             RemoveSmallComponents3D(vol, nx, ny, nz, minVoxels, log);
 
             // Pass 3: contour each slice from the cleaned volume and write.
+            log("  Writing contours...");
             int written = 0;
             for (int k = 0; k < nz; k++)
             {
