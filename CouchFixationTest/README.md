@@ -44,9 +44,16 @@ Two of those are configured per pass via `Segment(...)` arguments:
   to bridge the board's broken outline into a closed loop, which `External` then fills solid.
 
 Tunables — thresholds/couch model in `Script.cs` (`CoarseHuThreshold`, `RefinedHuThreshold`,
-`CoarseMinComponentCc`, `CouchModel`); close radii in `FixationGear.cs` (`CloseRadiusPx`,
-`FillCloseRadiusPx`). "Below" is larger pixel-row = posterior (head-first-supine); flip it in
-`KeepBelowReference` if needed.
+`CoarseMinComponentCc`, `CouchModel`, `ZMarginSlices`); close radii in `FixationGear.cs`
+(`CloseRadiusPx`, `FillCloseRadiusPx`). "Below" is larger pixel-row = posterior (head-first-supine);
+flip it in `KeepBelowReference` if needed.
+
+Performance: a single `FixationGear.Buffers` (one big `vol`/`visited` allocation) is shared across
+passes while image dimensions match, so we don't re-allocate ~100 MB per pass; passes are limited to
+the patient's z-slice range (the coarse pass to the body range ±`ZMarginSlices`, the refined pass
+skips slices where its below-reference has no contour); and the refined pass rasterizes its
+below-reference once and reuses it for both erasing and the below-constraint. (Cross-pass CT-voxel
+caching is intentionally not done: `AddCouchStructures` can resize the image between passes.)
 
 ## How to run
 

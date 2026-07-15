@@ -22,8 +22,12 @@ namespace CouchFixationTest
     /// morphologically close small gaps, optionally drop everything not below a reference structure,
     /// and store into a 3D volume. Then a 3D connected-component size filter removes noise, and the
     /// remaining contours are written back (same OpenCV technique as PalliativeAutoPlan/Segmenter.cs).
-    /// The size filter is 3D on purpose: fixation is thin per slice but large as a 3D object, so a
-    /// 2D per-slice filter would delete it.
+    ///
+    /// Performance: callers pass a reusable <see cref="Buffers"/> (one big vol/visited allocation
+    /// shared across passes when the image dimensions match) and a z-slice range so empty slices
+    /// above/below the patient are skipped. The refined pass additionally rasterizes its
+    /// below-reference once and reuses it for both erasing and the below-constraint, and skips any
+    /// slice where that reference has no contour.
     /// </summary>
     public static class FixationGear
     {
@@ -35,15 +39,40 @@ namespace CouchFixationTest
         private const int FillCloseRadiusPx = 12;
 
         /// <summary>
+        /// Reusable per-image working buffers. Allocate once and share across passes that operate on
+        /// an image of the same size (use <see cref="Matches"/> to check before reusing — the couch
+        /// step can resize the image).
+        /// </summary>
+        public sealed class Buffers
+        {
+            public readonly int Nx, Ny, Nz, PlaneSize;
+            public readonly byte[] Vol;      // full nx*ny*nz mask scratch
+            public readonly bool[] Visited;  // full nx*ny*nz, for 3D labelling
+            public readonly int[,] Plane;    // nx*ny, for GetVoxels
+
+            public Buffers(Image img)
+            {
+                Nx = img.XSize; Ny = img.YSize; Nz = img.ZSize;
+                PlaneSize = Nx * Ny;
+                Vol = new byte[PlaneSize * Nz];
+                Visited = new bool[PlaneSize * Nz];
+                Plane = new int[Nx, Ny];
+            }
+
+            public bool Matches(Image img) => img.XSize == Nx && img.YSize == Ny && img.ZSize == Nz;
+        }
+
+        /// <summary>
         /// Creates (or replaces) a structure <paramref name="id"/> holding every voxel with
         /// HU >= <paramref name="huThreshold"/>, minus the interiors of <paramref name="eraseStructures"/>,
         /// optionally restricted to voxels lying below (posterior to) <paramref name="belowReference"/>
-        /// on each axial slice. Requires the patient to be in modifications mode. Returns it, or null.
+        /// on each axial slice. Only slices in [<paramref name="zFrom"/>, <paramref name="zTo"/>] are
+        /// processed. Requires the patient to be in modifications mode. Returns it, or null.
         /// </summary>
         public static Structure Segment(
             StructureSet set, Image image, string id, System.Windows.Media.Color color,
             double huThreshold, IList<Structure> eraseStructures, Structure belowReference,
-            double minComponentCc, bool fillGaps, Action<string> log)
+            double minComponentCc, bool fillGaps, Buffers buf, int zFrom, int zTo, Action<string> log)
         {
             if (image == null) { log("  No image; cannot threshold."); return null; }
 
@@ -66,7 +95,8 @@ namespace CouchFixationTest
             log($"  HU threshold {huThreshold:0.#} -> raw voxel {rawThreshold:0.#} (keep {(keepAtOrAbove ? ">=" : "<=")}).");
 
             BuildVolume(fixation, image, rawThreshold, keepAtOrAbove,
-                        eraseStructures ?? new Structure[0], belowReference, minComponentCc, fillGaps, log);
+                        eraseStructures ?? new Structure[0], belowReference,
+                        minComponentCc, fillGaps, buf, zFrom, zTo, log);
             log($"  Volume: {SafeVolume(fixation):0.0} cc.");
             return fixation;
         }
@@ -93,19 +123,31 @@ namespace CouchFixationTest
         private static void BuildVolume(
             Structure fixation, Image img, double rawThreshold, bool keepAtOrAbove,
             IList<Structure> eraseStructures, Structure belowReference,
-            double minComponentCc, bool fillGaps, Action<string> log)
+            double minComponentCc, bool fillGaps, Buffers buf, int zFrom, int zTo, Action<string> log)
         {
             int nx = img.XSize, ny = img.YSize, nz = img.ZSize;
             int planeSize = nx * ny;
-            byte[] vol = new byte[planeSize * nz];
-            int[,] plane = new int[nx, ny];
-            int progressEvery = Math.Max(1, nz / 5);
-            int closeRadius = fillGaps ? FillCloseRadiusPx : CloseRadiusPx;
+            byte[] vol = buf.Vol;
+            int[,] plane = buf.Plane;
+            Array.Clear(vol, 0, planeSize * nz);
 
-            log($"  Thresholding + cleaning {nz} slices...");
-            for (int k = 0; k < nz; k++)
+            int kStart = Math.Max(0, zFrom);
+            int kEnd = Math.Min(nz - 1, zTo);
+            int closeRadius = fillGaps ? FillCloseRadiusPx : CloseRadiusPx;
+            int progressEvery = Math.Max(1, (kEnd - kStart + 1) / 5);
+
+            log($"  Thresholding + cleaning slices {kStart}..{kEnd}...");
+            for (int k = kStart; k <= kEnd; k++)
             {
-                if (k % progressEvery == 0 && k > 0) log($"    ...slice {k}/{nz}");
+                if ((k - kStart) % progressEvery == 0 && k > kStart) log($"    ...slice {k}/{kEnd}");
+
+                // Rasterize the below-reference once; reuse it for both the erase and the constraint.
+                Point[][] refPolys = belowReference != null
+                    ? ToPixelPolygons(img, belowReference.GetContoursOnImagePlane(k))
+                    : null;
+                // If we require "below a reference" and it isn't on this slice, nothing qualifies.
+                if (belowReference != null && refPolys.Length == 0) continue;
+
                 img.GetVoxels(k, plane);
                 using (Mat slice = new Mat(ny, nx, MatType.CV_8UC1, Scalar.All(0)))
                 {
@@ -122,11 +164,13 @@ namespace CouchFixationTest
                             }
                     }
 
-                    // Erase each structure's interior (fill its contours with 0).
+                    // Erase each structure's interior. Reuse refPolys for the below-reference.
                     var erasePolys = new List<Point[][]>();
                     foreach (Structure s in eraseStructures)
                     {
-                        Point[][] polys = ToPixelPolygons(img, s.GetContoursOnImagePlane(k));
+                        Point[][] polys = (belowReference != null && ReferenceEquals(s, belowReference))
+                            ? refPolys
+                            : ToPixelPolygons(img, s.GetContoursOnImagePlane(k));
                         if (polys.Length > 0)
                         {
                             Cv2.FillPoly(slice, polys, Scalar.All(0));
@@ -143,12 +187,8 @@ namespace CouchFixationTest
                             Cv2.FillPoly(slice, polys, Scalar.All(0));
                     }
 
-                    // Keep only voxels below (posterior to) the reference structure, per column.
                     if (belowReference != null)
-                    {
-                        Point[][] refPolys = ToPixelPolygons(img, belowReference.GetContoursOnImagePlane(k));
                         KeepBelowReference(slice, refPolys, nx, ny);
-                    }
 
                     CopySliceIntoVolume(slice, vol, k * planeSize, nx, ny);
                 }
@@ -159,7 +199,7 @@ namespace CouchFixationTest
                 double voxelCc = img.XRes * img.YRes * img.ZRes / 1000.0;
                 int minVoxels = Math.Max(1, (int)(minComponentCc / voxelCc));
                 log($"  Filtering 3D components (min {minComponentCc:0.##} cc = {minVoxels} vox)...");
-                RemoveSmallComponents3D(vol, nx, ny, nz, minVoxels, log);
+                RemoveSmallComponents3D(vol, buf.Visited, nx, ny, nz, minVoxels, log);
             }
             else
             {
@@ -168,7 +208,7 @@ namespace CouchFixationTest
 
             log("  Writing contours...");
             int written = 0;
-            for (int k = 0; k < nz; k++)
+            for (int k = kStart; k <= kEnd; k++)
             {
                 using (Mat slice = SliceFromVolume(vol, k * planeSize, nx, ny))
                 {
@@ -186,7 +226,7 @@ namespace CouchFixationTest
                     }
                 }
             }
-            log($"  Wrote {written} contour(s) across {nz} slices.");
+            log($"  Wrote {written} contour(s) across slices {kStart}..{kEnd}.");
         }
 
         // Keep only mask pixels strictly below (posterior to) the reference, per column. The board is
@@ -236,11 +276,11 @@ namespace CouchFixationTest
 
         // 26-connected component labelling over the whole volume; zero any component with fewer than
         // minVoxels voxels. Iterative (explicit stack) so deep components don't blow the call stack.
-        private static void RemoveSmallComponents3D(byte[] vol, int nx, int ny, int nz, int minVoxels, Action<string> log)
+        private static void RemoveSmallComponents3D(byte[] vol, bool[] visited, int nx, int ny, int nz, int minVoxels, Action<string> log)
         {
             int planeSize = nx * ny;
-            int total = vol.Length;
-            bool[] visited = new bool[total];
+            int total = planeSize * nz;
+            Array.Clear(visited, 0, total);
             var stack = new Stack<int>();
             var comp = new List<int>();
             int kept = 0, removed = 0;
@@ -258,31 +298,7 @@ namespace CouchFixationTest
                 {
                     int idx = stack.Pop();
                     comp.Add(idx);
-
-                    int k = idx / planeSize;
-                    int rem = idx - k * planeSize;
-                    int y = rem / nx;
-                    int x = rem - y * nx;
-
-                    for (int dz = -1; dz <= 1; dz++)
-                    {
-                        int nk = k + dz; if (nk < 0 || nk >= nz) continue;
-                        for (int dy = -1; dy <= 1; dy++)
-                        {
-                            int nyy = y + dy; if (nyy < 0 || nyy >= ny) continue;
-                            for (int dx = -1; dx <= 1; dx++)
-                            {
-                                if (dx == 0 && dy == 0 && dz == 0) continue;
-                                int nxx = x + dx; if (nxx < 0 || nxx >= nx) continue;
-                                int nidx = nxx + nx * (nyy + ny * nk);
-                                if (vol[nidx] != 0 && !visited[nidx])
-                                {
-                                    visited[nidx] = true;
-                                    stack.Push(nidx);
-                                }
-                            }
-                        }
-                    }
+                    FloodNeighbors(vol, visited, stack, idx, nx, ny, nz, planeSize);
                 }
 
                 if (comp.Count < minVoxels)
@@ -302,11 +318,13 @@ namespace CouchFixationTest
 
         // Rebuilds a structure keeping only its largest 3D connected component, dropping disconnected
         // "floating" blobs (e.g. dense fixation the body search left as islands outside the patient).
-        public static void KeepLargestComponent(Structure s, Image img, Action<string> log)
+        // Also reports the kept component's z-slice range so later passes can skip empty slices.
+        public static void KeepLargestComponent(Structure s, Image img, Buffers buf, out int kMin, out int kMax, Action<string> log)
         {
             int nx = img.XSize, ny = img.YSize, nz = img.ZSize;
             int planeSize = nx * ny;
-            byte[] vol = new byte[planeSize * nz];
+            byte[] vol = buf.Vol;
+            Array.Clear(vol, 0, planeSize * nz);
 
             // Rasterize the structure's contours into the volume.
             for (int k = 0; k < nz; k++)
@@ -321,16 +339,28 @@ namespace CouchFixationTest
             }
 
             long keptVox; int nComp;
-            KeepLargest3D(vol, nx, ny, nz, out keptVox, out nComp);
+            KeepLargest3D(vol, buf.Visited, nx, ny, nz, out keptVox, out nComp);
+
+            // z-range of the surviving (largest) component.
+            kMin = nz; kMax = -1;
+            for (int k = 0; k < nz; k++)
+            {
+                int off = k * planeSize;
+                bool any = false;
+                for (int i = 0; i < planeSize; i++) if (vol[off + i] != 0) { any = true; break; }
+                if (any) { if (k < kMin) kMin = k; kMax = k; }
+            }
+            if (kMax < 0) { kMin = 0; kMax = nz - 1; }   // empty (shouldn't happen) -> full range
+
             if (nComp <= 1)
             {
-                log($"  KeepLargest: 1 component, nothing to remove.");
+                log($"  KeepLargest: 1 component, nothing to remove (z {kMin}..{kMax}).");
                 return;
             }
 
             // Replace the structure with just the largest component.
             s.SegmentVolume = s.SegmentVolume.Sub(s.SegmentVolume);   // clear
-            for (int k = 0; k < nz; k++)
+            for (int k = kMin; k <= kMax; k++)
             {
                 using (Mat slice = SliceFromVolume(vol, k * planeSize, nx, ny))
                 {
@@ -344,15 +374,15 @@ namespace CouchFixationTest
                     }
                 }
             }
-            log($"  KeepLargest: {nComp} components; kept largest ({keptVox} vox), removed {nComp - 1} floating blob(s).");
+            log($"  KeepLargest: {nComp} components; kept largest ({keptVox} vox, z {kMin}..{kMax}), removed {nComp - 1} floating blob(s).");
         }
 
         // Zero every component except the largest (26-connected). Returns the largest size and count.
-        private static void KeepLargest3D(byte[] vol, int nx, int ny, int nz, out long largestSize, out int componentCount)
+        private static void KeepLargest3D(byte[] vol, bool[] visited, int nx, int ny, int nz, out long largestSize, out int componentCount)
         {
             int planeSize = nx * ny;
-            int total = vol.Length;
-            bool[] visited = new bool[total];
+            int total = planeSize * nz;
+            Array.Clear(visited, 0, total);
             var stack = new Stack<int>();
             var comp = new List<int>();
             List<int> largest = null;
@@ -370,29 +400,7 @@ namespace CouchFixationTest
                 {
                     int idx = stack.Pop();
                     comp.Add(idx);
-                    int k = idx / planeSize;
-                    int rem = idx - k * planeSize;
-                    int y = rem / nx;
-                    int x = rem - y * nx;
-                    for (int dz = -1; dz <= 1; dz++)
-                    {
-                        int nk = k + dz; if (nk < 0 || nk >= nz) continue;
-                        for (int dy = -1; dy <= 1; dy++)
-                        {
-                            int nyy = y + dy; if (nyy < 0 || nyy >= ny) continue;
-                            for (int dx = -1; dx <= 1; dx++)
-                            {
-                                if (dx == 0 && dy == 0 && dz == 0) continue;
-                                int nxx = x + dx; if (nxx < 0 || nxx >= nx) continue;
-                                int nidx = nxx + nx * (nyy + ny * nk);
-                                if (vol[nidx] != 0 && !visited[nidx])
-                                {
-                                    visited[nidx] = true;
-                                    stack.Push(nidx);
-                                }
-                            }
-                        }
-                    }
+                    FloodNeighbors(vol, visited, stack, idx, nx, ny, nz, planeSize);
                 }
 
                 if (largest == null || comp.Count > largest.Count)
@@ -408,6 +416,35 @@ namespace CouchFixationTest
 
             largestSize = largest?.Count ?? 0;
             componentCount = nComp;
+        }
+
+        // Pushes the unvisited 26-neighbours of voxel idx onto the stack (shared by both 3D scans).
+        private static void FloodNeighbors(byte[] vol, bool[] visited, Stack<int> stack, int idx, int nx, int ny, int nz, int planeSize)
+        {
+            int k = idx / planeSize;
+            int rem = idx - k * planeSize;
+            int y = rem / nx;
+            int x = rem - y * nx;
+
+            for (int dz = -1; dz <= 1; dz++)
+            {
+                int nk = k + dz; if (nk < 0 || nk >= nz) continue;
+                for (int dy = -1; dy <= 1; dy++)
+                {
+                    int nyy = y + dy; if (nyy < 0 || nyy >= ny) continue;
+                    for (int dx = -1; dx <= 1; dx++)
+                    {
+                        if (dx == 0 && dy == 0 && dz == 0) continue;
+                        int nxx = x + dx; if (nxx < 0 || nxx >= nx) continue;
+                        int nidx = nxx + nx * (nyy + ny * nk);
+                        if (vol[nidx] != 0 && !visited[nidx])
+                        {
+                            visited[nidx] = true;
+                            stack.Push(nidx);
+                        }
+                    }
+                }
+            }
         }
 
         // --- mask <-> volume helpers (handle possible row padding via Mat.Step) ---

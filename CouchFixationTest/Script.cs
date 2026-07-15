@@ -36,6 +36,7 @@ namespace VMS.TPS
         private const double CoarseHuThreshold = -550.0;   // rough pass (dense fixation + couch)
         private const double RefinedHuThreshold = -900.0;  // final pass, spatially constrained (catches foam)
         private const double CoarseMinComponentCc = 0.2;   // 3D noise filter for the coarse pass only
+        private const int ZMarginSlices = 10;              // slices added around the body z-range for the coarse pass
         private const string CouchModel = "Exact_IGRT_Couch_Top_thick"; // must match Eclipse (as PalliativeAutoPlan)
 
         [MethodImpl(MethodImplOptions.NoInlining)]
@@ -66,18 +67,26 @@ namespace VMS.TPS
             Structure body = EnsureBody(set, log);
             if (body == null) { log("No body available. Aborting."); return; }
 
+            // Reusable working buffers, shared across passes while the image dimensions match. (The
+            // couch step can resize the image; the refined pass allocates fresh ones if so.)
+            var buf = new FixationGear.Buffers(set.Image);
+
             // Clean the auto-body: drop disconnected floating blobs (dense fixation the body search
-            // left as separate islands), keeping only the patient (largest 3D component).
+            // left as separate islands), keeping only the patient (largest 3D component). Also gives
+            // the body's z-slice range so later passes skip the empty slices above/below the patient.
             log("Cleaning body (keep largest connected component)...");
-            FixationGear.KeepLargestComponent(body, set.Image, log);
+            int bodyKMin, bodyKMax;
+            FixationGear.KeepLargestComponent(body, set.Image, buf, out bodyKMin, out bodyKMax, log);
             LogBounds(body, log);
             log("");
 
             // 1) Coarse fixation. 3D-filter on (clean bulk for couch placement), no gap-fill.
+            //    Restricted to the body's z-range (+margin) — all the couch placement needs.
             log($"[1/4] Coarse fixation (HU >= {CoarseHuThreshold:0.#}, minus body)...");
             Structure coarse = FixationGear.Segment(set, set.Image, "fixation_coarse", Colors.Gray,
                                                     CoarseHuThreshold, new[] { body }, null,
-                                                    CoarseMinComponentCc, false, log);
+                                                    CoarseMinComponentCc, false, buf,
+                                                    bodyKMin - ZMarginSlices, bodyKMax + ZMarginSlices, log);
             if (coarse == null) { log("Coarse pass failed. Aborting."); return; }
             log("");
 
@@ -97,11 +106,14 @@ namespace VMS.TPS
             log($"[4/4] Refined fixation (HU >= {RefinedHuThreshold:0.#}, below original body, minus couch)...");
             var erase = new List<Structure> { bodyOrig };
             erase.AddRange(couch);
-            // Refined: no 3D filter (keep every voxel), gap-fill on (solid board).
+            // The couch may have resized the image; reuse buffers only if the dimensions still match.
+            var refinedBuf = buf.Matches(set.Image) ? buf : new FixationGear.Buffers(set.Image);
+            // Refined: no 3D filter (keep every voxel), gap-fill on (solid board). Full z-range — the
+            // below-reference (bodyOrig) makes it skip slices with no body automatically.
             Structure fixation = FixationGear.Segment(set, set.Image, "fixation_gear",
                                                       Color.FromRgb(0, 220, 220),
                                                       RefinedHuThreshold, erase, bodyOrig,
-                                                      0.0, true, log);
+                                                      0.0, true, refinedBuf, 0, int.MaxValue, log);
 
             if (fixation != null)
             {
