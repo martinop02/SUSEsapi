@@ -65,6 +65,11 @@ namespace VMS.TPS
 
             Structure body = EnsureBody(set, log);
             if (body == null) { log("No body available. Aborting."); return; }
+
+            // Clean the auto-body: drop disconnected floating blobs (dense fixation the body search
+            // left as separate islands), keeping only the patient (largest 3D component).
+            log("Cleaning body (keep largest connected component)...");
+            FixationGear.KeepLargestComponent(body, set.Image, log);
             LogBounds(body, log);
             log("");
 

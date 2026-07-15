@@ -300,6 +300,116 @@ namespace CouchFixationTest
             log($"  3D components: kept {kept} ({keptVoxels} vox, >= {minVoxels} each), removed {removed} small.");
         }
 
+        // Rebuilds a structure keeping only its largest 3D connected component, dropping disconnected
+        // "floating" blobs (e.g. dense fixation the body search left as islands outside the patient).
+        public static void KeepLargestComponent(Structure s, Image img, Action<string> log)
+        {
+            int nx = img.XSize, ny = img.YSize, nz = img.ZSize;
+            int planeSize = nx * ny;
+            byte[] vol = new byte[planeSize * nz];
+
+            // Rasterize the structure's contours into the volume.
+            for (int k = 0; k < nz; k++)
+            {
+                Point[][] polys = ToPixelPolygons(img, s.GetContoursOnImagePlane(k));
+                if (polys.Length == 0) continue;
+                using (Mat slice = new Mat(ny, nx, MatType.CV_8UC1, Scalar.All(0)))
+                {
+                    Cv2.FillPoly(slice, polys, Scalar.All(255));
+                    CopySliceIntoVolume(slice, vol, k * planeSize, nx, ny);
+                }
+            }
+
+            long keptVox; int nComp;
+            KeepLargest3D(vol, nx, ny, nz, out keptVox, out nComp);
+            if (nComp <= 1)
+            {
+                log($"  KeepLargest: 1 component, nothing to remove.");
+                return;
+            }
+
+            // Replace the structure with just the largest component.
+            s.SegmentVolume = s.SegmentVolume.Sub(s.SegmentVolume);   // clear
+            for (int k = 0; k < nz; k++)
+            {
+                using (Mat slice = SliceFromVolume(vol, k * planeSize, nx, ny))
+                {
+                    if (Cv2.CountNonZero(slice) == 0) continue;
+                    Point[][] contours = Cv2.FindContoursAsArray(
+                        slice, RetrievalModes.External, ContourApproximationModes.ApproxSimple);
+                    foreach (Point[] c in contours)
+                    {
+                        if (c.Length < 3) continue;
+                        s.AddContourOnImagePlane(c.Select(pt => ToDicom(img, pt.X, pt.Y, k)).ToArray(), k);
+                    }
+                }
+            }
+            log($"  KeepLargest: {nComp} components; kept largest ({keptVox} vox), removed {nComp - 1} floating blob(s).");
+        }
+
+        // Zero every component except the largest (26-connected). Returns the largest size and count.
+        private static void KeepLargest3D(byte[] vol, int nx, int ny, int nz, out long largestSize, out int componentCount)
+        {
+            int planeSize = nx * ny;
+            int total = vol.Length;
+            bool[] visited = new bool[total];
+            var stack = new Stack<int>();
+            var comp = new List<int>();
+            List<int> largest = null;
+            int nComp = 0;
+
+            for (int start = 0; start < total; start++)
+            {
+                if (vol[start] == 0 || visited[start]) continue;
+                nComp++;
+
+                comp.Clear();
+                stack.Push(start);
+                visited[start] = true;
+                while (stack.Count > 0)
+                {
+                    int idx = stack.Pop();
+                    comp.Add(idx);
+                    int k = idx / planeSize;
+                    int rem = idx - k * planeSize;
+                    int y = rem / nx;
+                    int x = rem - y * nx;
+                    for (int dz = -1; dz <= 1; dz++)
+                    {
+                        int nk = k + dz; if (nk < 0 || nk >= nz) continue;
+                        for (int dy = -1; dy <= 1; dy++)
+                        {
+                            int nyy = y + dy; if (nyy < 0 || nyy >= ny) continue;
+                            for (int dx = -1; dx <= 1; dx++)
+                            {
+                                if (dx == 0 && dy == 0 && dz == 0) continue;
+                                int nxx = x + dx; if (nxx < 0 || nxx >= nx) continue;
+                                int nidx = nxx + nx * (nyy + ny * nk);
+                                if (vol[nidx] != 0 && !visited[nidx])
+                                {
+                                    visited[nidx] = true;
+                                    stack.Push(nidx);
+                                }
+                            }
+                        }
+                    }
+                }
+
+                if (largest == null || comp.Count > largest.Count)
+                {
+                    if (largest != null) foreach (int i in largest) vol[i] = 0;  // demote the old largest
+                    largest = new List<int>(comp);
+                }
+                else
+                {
+                    foreach (int i in comp) vol[i] = 0;  // not largest -> remove
+                }
+            }
+
+            largestSize = largest?.Count ?? 0;
+            componentCount = nComp;
+        }
+
         // --- mask <-> volume helpers (handle possible row padding via Mat.Step) ---
 
         private static void CopySliceIntoVolume(Mat slice, byte[] vol, int offset, int nx, int ny)

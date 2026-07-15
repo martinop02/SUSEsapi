@@ -11,8 +11,12 @@ and verified quickly.
 ## What it does now
 
 Runs entirely on its own **scratch structure set** (`FixationTest`), so clinical data is never
-touched. A single global HU threshold can't cleanly isolate fixation (devices span a huge HU range
-and overlap the couch), so it uses a **two-pass, couch-assisted** approach:
+touched. The auto-generated body is first **cleaned by keeping only its largest 3D connected
+component** (`FixationGear.KeepLargestComponent`), dropping any disconnected dense-fixation blobs the
+body search left as islands — otherwise those would be erased (and lost) by the passes below.
+
+A single global HU threshold can't cleanly isolate fixation (devices span a huge HU range and
+overlap the couch), so it uses a **two-pass, couch-assisted** approach:
 
 1. **Coarse fixation** — `HU ≥ −550` minus body. Rough and patchy, but that's fine.
 2. **Merge into body** — save the original body as `body_orig`, then OR the coarse fixation into the
