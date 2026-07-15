@@ -40,12 +40,14 @@ Two of those are configured per pass via `Segment(...)` arguments:
 
 - **3D size filter** (`minComponentCc`): **on for the coarse pass** (`CoarseMinComponentCc`, cleans
   the bulk so the couch places well), **off for the refined pass** (keep every voxel).
-- **Gap-fill** (`fillGaps`): **on for the refined pass**. Uses a larger close (`FillCloseRadiusPx`)
-  to bridge the board's broken outline into a closed loop, which `External` then fills solid.
+- **Gap-fill** (`fillGaps`): **on for the refined pass**. In-plane, a larger close (`FillCloseRadiusPx`)
+  bridges the board's broken outline into a closed loop, which `External` then fills solid. Across
+  slices, a 1D close along z (`FillCloseRadiusZ`, in slices) bridges cranio-caudal gaps too — together
+  a separable 3D box close. Keep `FillCloseRadiusZ` small (1-2); larger over-connects in z.
 
 Tunables — thresholds/couch model in `Script.cs` (`CoarseHuThreshold`, `RefinedHuThreshold`,
 `CoarseMinComponentCc`, `CouchModel`, `ZMarginSlices`); close radii in `FixationGear.cs`
-(`CloseRadiusPx`, `FillCloseRadiusPx`). "Below" is larger pixel-row = posterior (head-first-supine);
+(`CloseRadiusPx`, `FillCloseRadiusPx`, `FillCloseRadiusZ`). "Below" is larger pixel-row = posterior (head-first-supine);
 flip it in `KeepBelowReference` if needed.
 
 Performance: a single `FixationGear.Buffers` (one big `vol`/`visited` allocation) is shared across

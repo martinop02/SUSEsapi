@@ -37,6 +37,9 @@ namespace CouchFixationTest
         // Larger close radius used when fillGaps is set: bridges the broken outline of the board so
         // the (External) contour then fills its interior solid.
         private const int FillCloseRadiusPx = 12;
+        // Close radius along z (in slices), applied with fillGaps: bridges across-slice gaps too.
+        // Keep small (1-2) — larger over-connects in the cranio-caudal direction. 0 disables it.
+        private const int FillCloseRadiusZ = 1;
 
         /// <summary>
         /// Reusable per-image working buffers. Allocate once and share across passes that operate on
@@ -192,6 +195,14 @@ namespace CouchFixationTest
 
                     CopySliceIntoVolume(slice, vol, k * planeSize, nx, ny);
                 }
+            }
+
+            // Bridge across-slice gaps: a 1D morphological close along z (separable box close, the
+            // in-plane part was done per slice above). Only when filling gaps.
+            if (fillGaps && FillCloseRadiusZ > 0)
+            {
+                log($"  Bridging across-slice gaps (z-close radius {FillCloseRadiusZ})...");
+                CloseAlongZ(vol, nx, ny, kStart, kEnd, FillCloseRadiusZ);
             }
 
             if (minComponentCc > 0)
@@ -443,6 +454,49 @@ namespace CouchFixationTest
                             stack.Push(nidx);
                         }
                     }
+                }
+            }
+        }
+
+        // 1D binary morphological close along z (dilate then erode) per (x,y) column, over slices
+        // [kStart, kEnd]. Bridges across-slice gaps; the in-plane close is done per slice separately.
+        private static void CloseAlongZ(byte[] vol, int nx, int ny, int kStart, int kEnd, int rz)
+        {
+            int planeSize = nx * ny;
+            int len = kEnd - kStart + 1;
+            if (len <= 1) return;
+
+            byte[] col = new byte[len];
+            byte[] dil = new byte[len];
+
+            for (int p = 0; p < planeSize; p++)
+            {
+                // Load the column; skip the (very common) all-empty ones.
+                bool any = false;
+                for (int k = 0; k < len; k++)
+                {
+                    byte v = vol[(kStart + k) * planeSize + p];
+                    col[k] = v;
+                    if (v != 0) any = true;
+                }
+                if (!any) continue;
+
+                // Dilate: 255 if any voxel within +/- rz is set.
+                for (int k = 0; k < len; k++)
+                {
+                    int lo = Math.Max(0, k - rz), hi = Math.Min(len - 1, k + rz);
+                    byte v = 0;
+                    for (int m = lo; m <= hi; m++) if (col[m] != 0) { v = 255; break; }
+                    dil[k] = v;
+                }
+
+                // Erode the dilation and write back: 255 only if all within +/- rz are set.
+                for (int k = 0; k < len; k++)
+                {
+                    int lo = Math.Max(0, k - rz), hi = Math.Min(len - 1, k + rz);
+                    byte v = 255;
+                    for (int m = lo; m <= hi; m++) if (dil[m] == 0) { v = 0; break; }
+                    vol[(kStart + k) * planeSize + p] = v;
                 }
             }
         }
