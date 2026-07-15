@@ -23,7 +23,7 @@ overlap the couch), so it uses a **two-pass, couch-assisted** approach:
    `EXTERNAL` body so it bulges to include the fixation bulk.
 3. **Add the couch** — with the body now including the fixation, `AddCouchStructures` places the
    couch at the correct height.
-4. **Refined fixation** — a much lower threshold (`HU ≥ −900`, catches foam), keeping only voxels
+4. **Refined fixation** — a lower threshold (`HU ≥ −750`), keeping only voxels
    that are **below (posterior to) the original body** on each axial slice and **outside the couch**.
    The result, `fixation_gear`, is the clean base fixation between patient and couch.
 5. **Merge into body** — OR `fixation_gear` into the `EXTERNAL` body so the external includes it.

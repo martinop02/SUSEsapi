@@ -34,7 +34,7 @@ namespace VMS.TPS
 
         private const string SetId = "FixationTest";
         private const double CoarseHuThreshold = -550.0;   // rough pass (dense fixation + couch)
-        private const double RefinedHuThreshold = -900.0;  // final pass, spatially constrained (catches foam)
+        private const double RefinedHuThreshold = -750.0;  // final pass, spatially constrained (catches foam)
         private const double CoarseMinComponentCc = 0.2;   // 3D noise filter for the coarse pass only
         private const int ZMarginSlices = 10;              // slices added around the body z-range for the coarse pass
         private const string CouchModel = "Exact_IGRT_Couch_Top_thick"; // must match Eclipse (as PalliativeAutoPlan)
