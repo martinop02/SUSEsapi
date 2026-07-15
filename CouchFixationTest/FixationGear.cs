@@ -189,8 +189,11 @@ namespace CouchFixationTest
             log($"  Wrote {written} contour(s) across {nz} slices.");
         }
 
-        // Zero any mask pixel that is not strictly below the reference on its column. "Below" = larger
-        // pixel-row = posterior for head-first-supine; flip the comparison if your orientation differs.
+        // Keep only mask pixels strictly below (posterior to) the reference, per column. The board is
+        // wider than the patient, so for columns with no body directly above we inherit the cutoff
+        // from the nearest body column (extend the body's posterior profile out to the board edges)
+        // instead of clearing them — otherwise the board's lateral edges get deleted.
+        // "Below" = larger pixel-row = posterior (head-first-supine); flip the comparison if needed.
         private static void KeepBelowReference(Mat slice, Point[][] refPolys, int nx, int ny)
         {
             if (refPolys.Length == 0) { slice.SetTo(Scalar.All(0)); return; } // no reference here -> nothing below
@@ -198,19 +201,34 @@ namespace CouchFixationTest
             using (Mat refMask = new Mat(ny, nx, MatType.CV_8UC1, Scalar.All(0)))
             {
                 Cv2.FillPoly(refMask, refPolys, Scalar.All(255));
+
+                int[] bottom = new int[nx];
                 unsafe
                 {
                     byte* rp = (byte*)refMask.DataPointer; long rstep = refMask.Step();
+                    for (int x = 0; x < nx; x++)
+                    {
+                        int b = -1;
+                        for (int y = 0; y < ny; y++)
+                            if (rp[y * rstep + x] != 0) b = y;    // lowest reference row in this column
+                        bottom[x] = b;
+                    }
+                }
+
+                // Horizontally fill gaps/edges from the nearest column that has a body (left, then right).
+                int prev = -1;
+                for (int x = 0; x < nx; x++) { if (bottom[x] >= 0) prev = bottom[x]; else if (prev >= 0) bottom[x] = prev; }
+                int next = -1;
+                for (int x = nx - 1; x >= 0; x--) { if (bottom[x] >= 0) next = bottom[x]; else if (next >= 0) bottom[x] = next; }
+
+                unsafe
+                {
                     byte* sp = (byte*)slice.DataPointer; long sstep = slice.Step();
                     for (int x = 0; x < nx; x++)
                     {
-                        int bottom = -1;
-                        for (int y = 0; y < ny; y++)
-                            if (rp[y * rstep + x] != 0) bottom = y;   // lowest reference row in this column
-
-                        int cut = bottom < 0 ? ny - 1 : bottom;       // no reference -> clear the column
-                        for (int y = 0; y <= cut; y++)
-                            sp[y * sstep + x] = 0;                     // keep only rows strictly below 'bottom'
+                        int cut = bottom[x];                       // keep only rows strictly below 'cut'
+                        if (cut < 0) { for (int y = 0; y < ny; y++) sp[y * sstep + x] = 0; continue; } // no body anywhere
+                        for (int y = 0; y <= cut; y++) sp[y * sstep + x] = 0;
                     }
                 }
             }
