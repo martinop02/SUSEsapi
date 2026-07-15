@@ -19,5 +19,12 @@ namespace PalliativeAutoPlan
         /// speed — reasonable for palliative. Off = the higher-quality defaults.
         /// </summary>
         public static bool Fast = false;
+
+        /// <summary>
+        /// Patient has fixation gear. When set, the couch is placed with the fixation accounted for
+        /// and the fixation is segmented into 'fixation_gear' (merged into the body). See
+        /// <see cref="Fixation"/>. Off = the normal couch placement, no fixation handling.
+        /// </summary>
+        public static bool Fixation = false;
     }
 }

@@ -90,11 +90,19 @@ namespace PalliativeAutoPlan
             root.Children.Add(sbh2Radio);
             root.Children.Add(sbh3Radio);
 
+            var fixationCheck = new CheckBox
+            {
+                Content = "Patient has fixation gear (adjust couch + segment fixation)",
+                Foreground = Text,
+                Margin = new Thickness(0, 14, 0, 0),   // unchecked by default = no fixation handling
+            };
+            root.Children.Add(fixationCheck);
+
             var fastCheck = new CheckBox
             {
                 Content = "Fast optimization (Moderate ASC, fewer cycles, no intermediate dose)",
                 Foreground = Text,
-                Margin = new Thickness(0, 14, 0, 0),   // unchecked by default = higher-quality run
+                Margin = new Thickness(0, 8, 0, 0),   // unchecked by default = higher-quality run
             };
             root.Children.Add(fastCheck);
 
@@ -113,9 +121,10 @@ namespace PalliativeAutoPlan
                 else if (apPaRadio.IsChecked == true) result = PlanTechnique.ApPaPair;
                 else result = PlanTechnique.Vmat;
 
-                // Apply the machine + speed choices for this run (read by the beam/optimization code).
+                // Apply the machine + speed + fixation choices for this run.
                 RunConfig.MachineId = sbh3Radio.IsChecked == true ? RunConfig.SBH3_2021 : RunConfig.SBH_2;
                 RunConfig.Fast = fastCheck.IsChecked == true;
+                RunConfig.Fixation = fixationCheck.IsChecked == true;
 
                 window.DialogResult = true;   // closes the modal window
             };
