@@ -23,6 +23,10 @@ namespace PalliativeAutoPlan
     {
         private const int MaxIdLength = 16;       // Eclipse limit for plan and structure ids
         private const double PtvMarginMm = 5.0;   // 0.5 cm grown in all directions
+        // Close the CTV before the PTV margin to fill the spinal-canal hole/indent. A close fills
+        // gaps up to ~2x the radius; the canal gap is ~7 mm, so 6 mm (fills ~12 mm) clears it with
+        // margin. Raise if a hole/indent remains; lower if the outer PTV shape gets too rounded.
+        private const double PtvCloseRadiusMm = 6.0;
         private const bool RunOptimizationAndDose = true;  // set false to build plans without optimizing/dosing
         private const double DefaultHingeDeg = 90.0;       // static pair angle when RunOptimizationAndDose is off
         private const string VmatOptResolution = "Normal"; // Photon Optimizer resolution: "Normal" ~2.5 mm (not "High"/fine)
@@ -88,9 +92,13 @@ namespace PalliativeAutoPlan
                 union = union.Or(vertebrae[i].SegmentVolume);
             ctv.SegmentVolume = union;
 
-            // PTV = CTV grown 5 mm (0.5 cm) in all directions.
+            // PTV = CTV, first closed to fill the spinal-canal hole/indent (dilate then erode = a
+            // morphological close), then grown by the PTV margin. The close is applied only here, so
+            // the CTV itself stays anatomically correct.
             Structure ptv = set.AddStructure("PTV", ptvId);
-            ptv.SegmentVolume = ctv.SegmentVolume.Margin(PtvMarginMm);
+            SegmentVolume closedCtv = ctv.SegmentVolume.Margin(PtvCloseRadiusMm).Margin(-PtvCloseRadiusMm);
+            ptv.SegmentVolume = closedCtv.Margin(PtvMarginMm);
+            log?.Invoke($"  PTV: closed CTV ({PtvCloseRadiusMm:0.#} mm, fills the spinal-canal gap) + {PtvMarginMm:0.#} mm margin.");
 
             // Create the plan in the prescription's course and set the PTV as target.
             ExternalPlanSetup plan = match.Course.AddExternalPlanSetup(set);
