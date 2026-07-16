@@ -108,6 +108,10 @@ namespace PalliativeAutoPlan
             // still returns the (already-created) plan, keeping the MVx numbering in sync.
             AddBeamAndOptimize(plan, ptv, set, technique, log);
 
+            // ESAPI cannot rename the isocenter itself, so create a reference point at the isocenter
+            // named after the PTV — that is the named "isocenter" seen in Eclipse.
+            AddIsocenterReferencePoint(plan, ptv, log);
+
             log?.Invoke($"Created plan '{planId}' (course '{match.Course.Id}') with {ctvId} + {ptvId}.");
             return plan;
         }
@@ -219,6 +223,31 @@ namespace PalliativeAutoPlan
                 // Build-only: equal-weight AP/PA pair, no dose.
                 StaticFieldBuilder.AddApPaPair(plan, ptv, ptv.CenterPoint, log);
                 log?.Invoke("  Built AP/PA pair at equal weight (dose skipped).");
+            }
+        }
+
+        // Creates a reference point at the plan's isocenter, named the same as the PTV. ESAPI 18.0
+        // exposes no way to rename the isocenter, so this named reference point placed at the
+        // isocenter is the "named isocenter" shown in Eclipse. Non-fatal if it cannot be added
+        // (e.g. no beams, or a reference point with that id already exists on the patient).
+        private static void AddIsocenterReferencePoint(ExternalPlanSetup plan, Structure ptv, Action<string> log)
+        {
+            Beam beam = plan.Beams?.FirstOrDefault(b => !b.IsSetupField);
+            if (beam == null)
+            {
+                log?.Invoke("  No treatment beam; skipping isocenter reference point.");
+                return;
+            }
+
+            try
+            {
+                var iso = beam.IsocenterPosition;                       // actual beam isocenter (any technique)
+                ReferencePoint rp = plan.AddReferencePoint(true, iso, ptv.Id);   // target = true
+                log?.Invoke($"  Added reference point '{rp.Id}' at the isocenter.");
+            }
+            catch (Exception ex)
+            {
+                log?.Invoke($"  WARNING: could not add reference point '{ptv.Id}': {ex.Message}");
             }
         }
 
