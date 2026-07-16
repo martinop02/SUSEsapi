@@ -27,6 +27,7 @@ namespace PalliativeAutoPlan
         private const double RefinedHuThreshold = -750.0;
         private const double CoarseMinComponentCc = 0.2;
         private const int ZMarginSlices = 10;
+        private const double FixationBodyMarginMm = 10.0;  // delete fixation within this of the body before merging (1 cm)
 
         private const string CoarseId = "fixation_coarse";  // rough pass — deleted after the run
         public const string FinalId = "fixation_gear";       // clean pass — kept
@@ -94,6 +95,10 @@ namespace PalliativeAutoPlan
             // Final body = clean patient body OR the clean fixation (drops the rough coarse bulge).
             if (fixation != null)
             {
+                // Keep the fixation at least 1 cm from the body: delete anything within the margin
+                // of the (clean) original body before merging.
+                RemoveNearBody(fixation, st.BodyOrig, log);
+
                 try
                 {
                     st.Body.SegmentVolume = st.BodyOrig.SegmentVolume;   // reset to the clean patient
@@ -133,6 +138,23 @@ namespace PalliativeAutoPlan
             catch (Exception ex)
             {
                 log("  WARNING: could not OR into '" + target.Id + "': " + ex.Message);
+            }
+        }
+
+        // Deletes any part of 'fixation' within FixationBodyMarginMm of 'body' (fixation - body grown
+        // by the margin), so the fixation keeps a 1 cm gap from the body before it is merged in.
+        private static void RemoveNearBody(Structure fixation, Structure body, Action<string> log)
+        {
+            try
+            {
+                double before = SafeVolume(fixation);
+                SegmentVolume grownBody = body.SegmentVolume.Margin(FixationBodyMarginMm);
+                fixation.SegmentVolume = fixation.SegmentVolume.Sub(grownBody);
+                log($"  Removed fixation within {FixationBodyMarginMm:0.#} mm of body: {before:0.0} -> {SafeVolume(fixation):0.0} cc.");
+            }
+            catch (Exception ex)
+            {
+                log("  WARNING: could not apply body margin to fixation: " + ex.Message);
             }
         }
 

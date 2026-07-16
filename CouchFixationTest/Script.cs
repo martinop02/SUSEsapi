@@ -37,6 +37,7 @@ namespace VMS.TPS
         private const double RefinedHuThreshold = -750.0;  // final pass, spatially constrained (catches foam)
         private const double CoarseMinComponentCc = 0.2;   // 3D noise filter for the coarse pass only
         private const int ZMarginSlices = 10;              // slices added around the body z-range for the coarse pass
+        private const double FixationBodyMarginMm = 10.0;  // delete fixation within this of the body before merging (1 cm)
         private const string CouchModel = "Exact_IGRT_Couch_Top_thick"; // must match Eclipse (as PalliativeAutoPlan)
 
         [MethodImpl(MethodImplOptions.NoInlining)]
@@ -117,6 +118,10 @@ namespace VMS.TPS
 
             if (fixation != null)
             {
+                // Keep the fixation at least 1 cm from the body: delete anything within the margin
+                // of the (clean) original body before merging.
+                RemoveNearBody(fixation, bodyOrig, log);
+
                 log("");
                 LogBounds(fixation, log);
 
@@ -190,6 +195,23 @@ namespace VMS.TPS
             catch (Exception ex)
             {
                 log("  WARNING: could not OR into '" + target.Id + "': " + ex.Message);
+            }
+        }
+
+        // Deletes any part of 'fixation' within FixationBodyMarginMm of 'body' (fixation - body grown
+        // by the margin), so the fixation keeps a 1 cm gap from the body before it is merged in.
+        private static void RemoveNearBody(Structure fixation, Structure body, Action<string> log)
+        {
+            try
+            {
+                double before = SafeVolume(fixation);
+                SegmentVolume grownBody = body.SegmentVolume.Margin(FixationBodyMarginMm);
+                fixation.SegmentVolume = fixation.SegmentVolume.Sub(grownBody);
+                log($"  Removed fixation within {FixationBodyMarginMm:0.#} mm of body: {before:0.0} -> {SafeVolume(fixation):0.0} cc.");
+            }
+            catch (Exception ex)
+            {
+                log("  WARNING: could not apply body margin to fixation: " + ex.Message);
             }
         }
 
