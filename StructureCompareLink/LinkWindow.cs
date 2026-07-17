@@ -29,7 +29,7 @@ namespace StructureCompareLink
         private const double TopMargin = 16;
         private const double ColumnWidth = 190;
         private const double ColumnGap = 90;
-        private const double HeaderHeight = 52;
+        private const double HeaderHeight = 76;
         private const double NodeHeight = 24;
         private const double NodeGap = 6;
         private const double BottomPad = 24;
@@ -47,11 +47,22 @@ namespace StructureCompareLink
         private static readonly Brush ManualLinkBrush = Frozen(0xE0, 0x8A, 0x3C); // orange
         private static readonly Brush SelectedLinkBrush = Frozen(0xE0, 0x4F, 0x4F); // red
 
+        // Ground-truth (the "reference" set the others are scored against) highlight — gold.
+        private static readonly Brush GroundTruthBrush = Frozen(0xD8, 0xB4, 0x4A);
+        private static readonly Brush GroundTruthHeaderBrush = Frozen(0x3A, 0x34, 0x1E);
+
         // ---- Model -------------------------------------------------------------------------------
         private readonly SeriesData _data;
         private readonly LinkGraph _graph = new LinkGraph();
         private readonly List<LinkNode> _nodes = new List<LinkNode>();
         private readonly Dictionary<LinkNode, NodeView> _views = new Dictionary<LinkNode, NodeView>();
+
+        // Ground-truth designation: one set is the reference the others are compared against
+        // (the analogue of the "bkn" RS file in the Python StructureCompare).
+        private StructureSetInfo _groundTruthSet;
+        private readonly Dictionary<StructureSetInfo, Border> _headerBorders = new Dictionary<StructureSetInfo, Border>();
+        private readonly Dictionary<StructureSetInfo, TextBlock> _headerBadges = new Dictionary<StructureSetInfo, TextBlock>();
+        private readonly Dictionary<StructureSetInfo, RadioButton> _gtRadios = new Dictionary<StructureSetInfo, RadioButton>();
 
         private Window _window;
         private Canvas _canvas;
@@ -95,6 +106,11 @@ namespace StructureCompareLink
             };
             _window.Content = BuildContent();
             _window.KeyDown += OnKeyDown;
+
+            // Default the ground truth to the first set; the user changes it with the header radios.
+            // Checking the radio fires SetGroundTruth, which applies the highlight.
+            if (_data.Sets.Count > 0)
+                _gtRadios[_data.Sets[0]].IsChecked = true;
 
             // Auto-link same-named structures up front, then draw everything.
             _graph.AutoLinkByName(_nodes);
@@ -212,9 +228,11 @@ namespace StructureCompareLink
                 StructureSetInfo set = _data.Sets[col];
                 double x = LeftMargin + col * (ColumnWidth + ColumnGap);
 
-                // Column header: set id + image, and structure count.
-                var header = new StackPanel { Width = ColumnWidth };
-                header.Children.Add(new TextBlock
+                // Column header: set id + image + structure count, plus a "ground truth" radio.
+                var header = new StackPanel();
+
+                var titleRow = new StackPanel { Orientation = Orientation.Horizontal };
+                titleRow.Children.Add(new TextBlock
                 {
                     Text = set.Id,
                     Foreground = TextBrush,
@@ -222,6 +240,19 @@ namespace StructureCompareLink
                     TextTrimming = TextTrimming.CharacterEllipsis,
                     ToolTip = set.Id,
                 });
+                var badge = new TextBlock
+                {
+                    Text = "  ★ GT",
+                    Foreground = GroundTruthBrush,
+                    FontWeight = FontWeights.Bold,
+                    FontSize = 11,
+                    VerticalAlignment = VerticalAlignment.Center,
+                    Visibility = Visibility.Collapsed,
+                };
+                titleRow.Children.Add(badge);
+                _headerBadges[set] = badge;
+                header.Children.Add(titleRow);
+
                 header.Children.Add(new TextBlock
                 {
                     Text = $"image {set.ImageId} · {set.Structures.Count} structures",
@@ -229,9 +260,34 @@ namespace StructureCompareLink
                     FontSize = 11,
                     TextTrimming = TextTrimming.CharacterEllipsis,
                 });
-                Canvas.SetLeft(header, x);
-                Canvas.SetTop(header, TopMargin);
-                _canvas.Children.Add(header);
+
+                StructureSetInfo capturedSet = set;   // avoid the loop-variable capture pitfall
+                var gtRadio = new RadioButton
+                {
+                    Content = "Ground truth",
+                    GroupName = "GroundTruth",
+                    Foreground = DimTextBrush,
+                    FontSize = 11,
+                    Margin = new Thickness(0, 4, 0, 0),
+                };
+                gtRadio.Checked += (s, e) => SetGroundTruth(capturedSet);
+                header.Children.Add(gtRadio);
+                _gtRadios[set] = gtRadio;
+
+                var headerBorder = new Border
+                {
+                    Width = ColumnWidth,
+                    Child = header,
+                    Padding = new Thickness(6, 3, 6, 3),
+                    CornerRadius = new CornerRadius(4),
+                    BorderThickness = new Thickness(1),
+                    BorderBrush = Brushes.Transparent,
+                    Background = Brushes.Transparent,
+                };
+                _headerBorders[set] = headerBorder;
+                Canvas.SetLeft(headerBorder, x);
+                Canvas.SetTop(headerBorder, TopMargin);
+                _canvas.Children.Add(headerBorder);
 
                 for (int row = 0; row < set.Structures.Count; row++)
                 {
@@ -482,6 +538,46 @@ namespace StructureCompareLink
             UpdateStatus();
         }
 
+        // ---- Ground-truth designation ------------------------------------------------------------
+
+        // Marks one set as the ground truth (the reference the others are scored against) and
+        // restyles the columns so the choice is obvious.
+        private void SetGroundTruth(StructureSetInfo set)
+        {
+            if (_groundTruthSet == set) return;
+            _groundTruthSet = set;
+            ApplyGroundTruthStyles();
+            UpdateStatus();
+            SetStatus($"Ground truth set to '{set.Id}'. Other sets are compared against it.");
+        }
+
+        private void ApplyGroundTruthStyles()
+        {
+            foreach (StructureSetInfo set in _data.Sets)
+            {
+                bool isGt = set == _groundTruthSet;
+
+                if (_headerBorders.TryGetValue(set, out Border header))
+                {
+                    header.Background = isGt ? GroundTruthHeaderBrush : Brushes.Transparent;
+                    header.BorderBrush = isGt ? GroundTruthBrush : Brushes.Transparent;
+                }
+                if (_headerBadges.TryGetValue(set, out TextBlock badge))
+                    badge.Visibility = isGt ? Visibility.Visible : Visibility.Collapsed;
+
+                // Give the ground-truth column's node boxes a gold border so they read as reference.
+                foreach (StructureInfo s in set.Structures)
+                {
+                    LinkNode node = _nodes.First(n => n.Set == set && n.Structure == s);
+                    if (_views.TryGetValue(node, out NodeView view) && view.Border != null)
+                    {
+                        view.Border.BorderBrush = isGt ? GroundTruthBrush : NodeBorderBrush;
+                        view.Border.BorderThickness = new Thickness(isGt ? 2 : 1);
+                    }
+                }
+            }
+        }
+
         // ---- Toolbar / keyboard actions ----------------------------------------------------------
 
         private void OnAutoLink(object sender, RoutedEventArgs e)
@@ -551,7 +647,7 @@ namespace StructureCompareLink
 
             try
             {
-                int rows = _graph.WriteCsv(dialog.FileName, _nodes, includeUnlinked);
+                int rows = _graph.WriteCsv(dialog.FileName, _nodes, _groundTruthSet, includeUnlinked);
                 SetStatus($"Saved {rows} row(s) in {groups.Count} group(s) to {dialog.FileName}");
                 MessageBox.Show(
                     $"Saved {rows} row(s) across {groups.Count} group(s).\n\n{dialog.FileName}",
@@ -571,8 +667,9 @@ namespace StructureCompareLink
             int manual = _graph.Edges.Count(e => e.Manual);
             int auto = _graph.Edges.Count - manual;
             int correspondences = _graph.BuildGroups(_nodes, includeUnlinked: false).Count;
+            string gt = _groundTruthSet != null ? _groundTruthSet.Id : "(none)";
             if (_countsText != null)
-                _countsText.Text = $"{_data.Sets.Count} set(s) · {_nodes.Count} structures · " +
+                _countsText.Text = $"GT: {gt} · {_data.Sets.Count} set(s) · {_nodes.Count} structures · " +
                                    $"{_graph.Edges.Count} link(s) ({auto} auto, {manual} manual) · " +
                                    $"{correspondences} linked group(s)";
         }

@@ -20,31 +20,38 @@ This replaces the hard-coded name-mapping table in `StructureCompare/analysis/pa
    (matched by series UID).
 2. **Show the sets side by side** — one column per structure set, each listing its structures
    (empty structures are dimmed; hover for DICOM type and volume).
-3. **Auto-link by name** — on open, structures whose names match (case-insensitive, trimmed) are
+3. **Pick the ground truth** — each column header has a **Ground truth** radio. The chosen set is
+   the reference the others are scored against (the analogue of the `bkn` RS file in the Python
+   pipeline). It defaults to the first set and is highlighted in gold (★ GT). Metrics are asymmetric
+   — compare-vs-ground-truth — so this choice matters.
+4. **Auto-link by name** — on open, structures whose names match (case-insensitive, trimmed) are
    linked across sets. Links that span three or more sets are chained into a single group.
-4. **Manual linking** — **drag** from a structure in one column to the matching structure in
+5. **Manual linking** — **drag** from a structure in one column to the matching structure in
    another to link names that differ slightly (e.g. `Parotid_L` ↔ `parotid_lt`). Blue lines are
    auto-links, orange lines are manual.
-5. **Edit links** — click a line to select it (turns red); press **Delete** or **Remove selected
+6. **Edit links** — click a line to select it (turns red); press **Delete** or **Remove selected
    link** to remove it. **Right-click** a line removes it immediately. **Clear all links** starts
    over; **Auto-link by name** re-adds any missing same-name links without touching manual ones.
-6. **Save CSV…** — writes the correspondence table to a location you choose.
+7. **Save CSV…** — writes the correspondence table to a location you choose.
 
 ## CSV format
 
 Semicolon-delimited, UTF-8 with BOM (opens directly in Excel where `;` is the list separator):
 
 ```
-Group;StructureSetId;StructureId
-1;CT_AI;Parotid_L
-1;CT_Manual;parotid_lt
-2;CT_AI;SpinalCord
-2;CT_Manual;spinalcord
+Group;Role;StructureSetId;StructureId
+1;GroundTruth;CT_Manual;parotid_lt
+1;Compare;CT_AI;Parotid_L
+2;GroundTruth;CT_Manual;spinalcord
+2;Compare;CT_AI;SpinalCord
 ```
 
 - **Group** — rows that share a group number are the same anatomical structure by different
-  methods. A comparison then evaluates every member of a group against the others (or against a
-  chosen reference/ground-truth member).
+  methods. A comparison evaluates each `Compare` member of a group against the group's
+  `GroundTruth` member.
+- **Role** — `GroundTruth` for the structure from the chosen ground-truth set, `Compare` for the
+  rest. Mirrors the ground-truth vs. compare split in `StructureCompare/analysis/patient.py`. The
+  ground-truth row is written first within each group.
 - **StructureSetId** — identifies the method (the structure set the structure came from).
 - **StructureId** — the ROI name as it appears in that set.
 

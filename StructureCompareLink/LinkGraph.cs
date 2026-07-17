@@ -168,25 +168,36 @@ namespace StructureCompareLink
 
         /// <summary>
         /// Writes the groups as a semicolon-delimited CSV with columns
-        /// <c>Group;StructureSetId;StructureId</c>. Rows that share a Group are the same structure
-        /// by different methods. UTF-8 with BOM so Excel (with ';' as the list separator) opens it
-        /// cleanly. Returns the number of data rows written.
+        /// <c>Group;Role;StructureSetId;StructureId</c>. Rows that share a Group are the same
+        /// structure by different methods; <c>Role</c> is <c>GroundTruth</c> for the structure that
+        /// came from <paramref name="groundTruth"/> (the reference set the others are scored
+        /// against, i.e. the analogue of the "bkn" RS file) and <c>Compare</c> for the rest. Within
+        /// a group the ground-truth row is written first. UTF-8 with BOM so Excel (with ';' as the
+        /// list separator) opens it cleanly. Returns the number of data rows written.
         /// </summary>
-        public int WriteCsv(string path, IReadOnlyList<LinkNode> allNodes, bool includeUnlinked)
+        public int WriteCsv(string path, IReadOnlyList<LinkNode> allNodes,
+                            StructureSetInfo groundTruth, bool includeUnlinked)
         {
             List<List<LinkNode>> groups = BuildGroups(allNodes, includeUnlinked);
 
             var sb = new StringBuilder();
-            sb.Append("Group;StructureSetId;StructureId\r\n");
+            sb.Append("Group;Role;StructureSetId;StructureId\r\n");
 
             int rows = 0;
             int groupNumber = 0;
             foreach (List<LinkNode> group in groups)
             {
                 groupNumber++;
-                foreach (LinkNode node in group)
+                // Ground-truth member first, then the compare members (kept in their set order).
+                IEnumerable<LinkNode> ordered = group
+                    .OrderByDescending(n => n.Set == groundTruth);
+
+                foreach (LinkNode node in ordered)
                 {
+                    string role = node.Set == groundTruth ? "GroundTruth" : "Compare";
                     sb.Append(groupNumber.ToString(CultureInfo.InvariantCulture));
+                    sb.Append(';');
+                    sb.Append(role);
                     sb.Append(';');
                     sb.Append(Escape(node.Set.Id));
                     sb.Append(';');
