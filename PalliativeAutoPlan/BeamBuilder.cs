@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Linq;
 using VMS.TPS.Common.Model.API;
 using VMS.TPS.Common.Model.Types;
@@ -6,8 +7,8 @@ using VMS.TPS.Common.Model.Types;
 namespace PalliativeAutoPlan
 {
     /// <summary>
-    /// Adds a single full VMAT arc isocentred on the PTV. The treatment-unit configuration and
-    /// arc geometry are constants so they are easy to find and adjust.
+    /// Adds VMAT arc(s) isocentred on the PTV — a single full arc, or a dual CW+CCW arc pair. The
+    /// treatment-unit configuration and arc geometry are constants so they are easy to find and adjust.
     /// </summary>
     public static class BeamBuilder
     {
@@ -20,19 +21,41 @@ namespace PalliativeAutoPlan
         private const string Technique = "SRS ARC";
         private const string FluenceMode = null;
 
-        // --- Single full arc geometry ---
+        // --- Arc geometry ---
         private const double GantryStart = 181.0;
-        private const double GantryStop = 179.0;     // 181 -> 179 clockwise ~ full 360 deg arc
-        private const double CollimatorAngle = 30.0;
+        private const double GantryStop = 179.0;      // 181 -> 179 clockwise ~ full 360 deg arc
+        private const double CollimatorAngle = 30.0;    // single / first (CW) arc
+        private const double CollimatorAngle2 = 330.0;  // second (CCW) arc of the dual-arc technique
         private const double CouchAngle = 0.0;
-        private const int ControlPoints = 178;       // number of meterset weights = control points
+        private const int ControlPoints = 178;        // number of meterset weights = control points
 
         // --- Jaw fitting (Eclipse otherwise leaves a default field size) ---
         private const double JawMarginMm = 10.0;               // uniform margin around the PTV (mm)
-        private const bool OptimizeCollimatorRotation = false; // false = keep CollimatorAngle above
+        private const bool OptimizeCollimatorRotation = false; // false = keep the collimator angle
         private const double MaxFieldXMm = 170.0;              // cap on X field width (X1+X2): 17.0 cm
 
+        /// <summary>Single full arc: 181 -> 179 clockwise, collimator 30.</summary>
         public static Beam AddSingleArc(ExternalPlanSetup plan, Structure ptv, Action<string> log)
+            => AddArc(plan, ptv, GantryStart, GantryStop, GantryDirection.Clockwise, CollimatorAngle, log);
+
+        /// <summary>
+        /// Dual arc: 181 -> 179 clockwise (collimator 30) plus 179 -> 181 counter-clockwise
+        /// (collimator 330). Otherwise identical to the single arc; OptimizeVMAT optimizes both arcs
+        /// together, so the rest of the VMAT pipeline is unchanged.
+        /// </summary>
+        public static List<Beam> AddDualArc(ExternalPlanSetup plan, Structure ptv, Action<string> log)
+        {
+            return new List<Beam>
+            {
+                AddArc(plan, ptv, GantryStart, GantryStop, GantryDirection.Clockwise, CollimatorAngle, log),
+                AddArc(plan, ptv, GantryStop, GantryStart, GantryDirection.CounterClockwise, CollimatorAngle2, log),
+            };
+        }
+
+        // Adds one VMAT arc with the given gantry sweep, direction and collimator, then fits/clamps
+        // its jaws to the PTV (shared by the single- and dual-arc entry points above).
+        private static Beam AddArc(ExternalPlanSetup plan, Structure ptv, double gantryStart, double gantryStop,
+                                   GantryDirection direction, double collimator, Action<string> log)
         {
             var machine = new ExternalBeamMachineParameters(RunConfig.MachineId, EnergyId, DoseRate, Technique, FluenceMode);
 
@@ -45,14 +68,14 @@ namespace PalliativeAutoPlan
             Beam arc = plan.AddVMATBeam(
                 machine,
                 weights,
-                CollimatorAngle,
-                GantryStart,
-                GantryStop,
-                GantryDirection.Clockwise,
+                collimator,
+                gantryStart,
+                gantryStop,
+                direction,
                 CouchAngle,
                 ptv.CenterPoint);
 
-            log?.Invoke($"  Added VMAT arc '{arc.Id}' ({RunConfig.MachineId} {EnergyId} {Technique}/{FluenceMode}, gantry {GantryStart}->{GantryStop} CW, iso at PTV center).");
+            log?.Invoke($"  Added VMAT arc '{arc.Id}' ({RunConfig.MachineId} {EnergyId} {Technique}/{FluenceMode}, gantry {gantryStart}->{gantryStop} {direction}, coll {collimator}, iso at PTV center).");
 
             // Size the jaws to the PTV's beam's-eye-view projection plus a margin (VMAT keeps the
             // jaws fixed across the arc). Without this the field stays at Eclipse's default size.

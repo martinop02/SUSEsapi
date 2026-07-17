@@ -11,6 +11,7 @@ namespace PalliativeAutoPlan
     public enum PlanTechnique
     {
         Vmat,        // single full VMAT arc, inverse-optimized (OptimizeVMAT)
+        VmatDualArc, // two VMAT arcs: 181->179 CW (coll 30) + 179->181 CCW (coll 330), inverse-optimized
         StaticPair,  // two open posterior fields, forward-planned hinge-angle search
         ApPaPair,    // AP/PA parallel-opposed pair (gantry 0 + 180), forward-planned weight search
     }
@@ -133,9 +134,10 @@ namespace PalliativeAutoPlan
             {
                 switch (technique)
                 {
-                    case PlanTechnique.StaticPair: BuildStaticPair(plan, ptv, set, log); break;
-                    case PlanTechnique.ApPaPair:   BuildApPaPair(plan, ptv, set, log);   break;
-                    default:                        BuildVmatArc(plan, ptv, set, log);    break;
+                    case PlanTechnique.StaticPair:  BuildStaticPair(plan, ptv, set, log); break;
+                    case PlanTechnique.ApPaPair:    BuildApPaPair(plan, ptv, set, log);   break;
+                    case PlanTechnique.VmatDualArc: BuildVmatArc(plan, ptv, set, log, dualArc: true);  break;
+                    default:                        BuildVmatArc(plan, ptv, set, log, dualArc: false); break;
                 }
             }
             catch (Exception ex)
@@ -144,8 +146,10 @@ namespace PalliativeAutoPlan
             }
         }
 
-        // Single full VMAT arc, inverse-optimized (OptimizeVMAT) then dosed.
-        private static void BuildVmatArc(ExternalPlanSetup plan, Structure ptv, StructureSet set, Action<string> log)
+        // VMAT arc(s), inverse-optimized (OptimizeVMAT) then dosed. dualArc=false adds a single full
+        // arc; dualArc=true adds the CW+CCW pair. Everything else (models, resolution, ASC,
+        // objectives, optimize, dose, normalize) is identical.
+        private static void BuildVmatArc(ExternalPlanSetup plan, Structure ptv, StructureSet set, Action<string> log, bool dualArc)
         {
             if (!Calculation.SetVmatModels(plan, log))
             {
@@ -161,7 +165,8 @@ namespace PalliativeAutoPlan
             // (quicker), else Very High (higher quality).
             Calculation.SetApertureShapeController(plan, RunConfig.Fast ? Calculation.AscModerate : Calculation.AscVeryHigh, log);
 
-            BeamBuilder.AddSingleArc(plan, ptv, log);
+            if (dualArc) BeamBuilder.AddDualArc(plan, ptv, log);
+            else BeamBuilder.AddSingleArc(plan, ptv, log);
             int objectives = OptimizationGoals.Apply(plan, ptv, set, log);
 
             if (objectives > 0 && RunOptimizationAndDose)

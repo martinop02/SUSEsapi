@@ -60,11 +60,19 @@ namespace PalliativeAutoPlan
                 Content = "VMAT arc (single full arc, inverse optimized)",
                 Foreground = Text,
                 GroupName = "Technique",
+                Margin = new Thickness(0, 0, 0, 8),
+            };
+            var vmat2Radio = new RadioButton
+            {
+                Content = "2-field VMAT (dual arc: 181->179 CW coll 30 + 179->181 CCW coll 330)",
+                Foreground = Text,
+                GroupName = "Technique",
                 Margin = new Thickness(0, 0, 0, 14),
             };
             root.Children.Add(staticRadio);
             root.Children.Add(apPaRadio);
             root.Children.Add(vmatRadio);
+            root.Children.Add(vmat2Radio);
 
             root.Children.Add(new TextBlock
             {
@@ -119,7 +127,8 @@ namespace PalliativeAutoPlan
             {
                 if (staticRadio.IsChecked == true) result = PlanTechnique.StaticPair;
                 else if (apPaRadio.IsChecked == true) result = PlanTechnique.ApPaPair;
-                else result = PlanTechnique.Vmat;
+                else if (vmatRadio.IsChecked == true) result = PlanTechnique.Vmat;
+                else result = PlanTechnique.VmatDualArc;
 
                 // Apply the machine + speed + fixation choices for this run.
                 RunConfig.MachineId = sbh3Radio.IsChecked == true ? RunConfig.SBH3_2021 : RunConfig.SBH_2;
