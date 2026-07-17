@@ -234,39 +234,43 @@ namespace PalliativeAutoPlan
             }
         }
 
-        // Eclipse auto-creates the plan's primary reference point named after the plan (MVx_...).
-        // Rename that reference point to the PTV id (ReferencePoint.Id is settable in ESAPI 18.0).
-        // Falls back to creating one at the isocenter if the plan has no primary reference point.
-        // Non-fatal (e.g. a reference point with that id already exists on the patient).
+        // Eclipse auto-creates the plan's (target) reference point named after the plan (MVx_...).
+        // That reference point is NOT necessarily exposed as PrimaryReferencePoint, so search all of
+        // plan.ReferencePoints for it and rename it to the PTV id (ReferencePoint.Id is settable in
+        // ESAPI 18.0). Logs the reference points present so the naming can be verified. Non-fatal.
         private static void RenameReferencePointToPtv(ExternalPlanSetup plan, Structure ptv, Action<string> log)
         {
             try
             {
-                ReferencePoint rp = plan.PrimaryReferencePoint;
-                if (rp != null)
+                var rps = plan.ReferencePoints?.ToList() ?? new List<ReferencePoint>();
+                log?.Invoke("  Reference points on plan: "
+                    + (rps.Count == 0 ? "(none)" : string.Join(", ", rps.Select(r => "'" + r.Id + "'"))));
+
+                if (rps.Any(r => r.Id == ptv.Id))
                 {
-                    if (rp.Id == ptv.Id) { log?.Invoke($"  Reference point already named '{ptv.Id}'."); return; }
-                    string old = rp.Id;
-                    rp.Id = ptv.Id;
-                    log?.Invoke($"  Renamed reference point '{old}' -> '{ptv.Id}'.");
+                    log?.Invoke($"  Reference point already named '{ptv.Id}'.");
                     return;
                 }
 
-                // No primary reference point: create one at the beam isocenter instead.
-                Beam beam = plan.Beams?.FirstOrDefault(b => !b.IsSetupField);
-                if (beam != null)
+                // Prefer the primary; else the one named after the plan (MVx_...); else the only one.
+                ReferencePoint target = plan.PrimaryReferencePoint
+                                     ?? rps.FirstOrDefault(r => r.Id == plan.Id)
+                                     ?? (rps.Count == 1 ? rps[0] : null);
+
+                if (target == null)
                 {
-                    ReferencePoint created = plan.AddReferencePoint(true, beam.IsocenterPosition, ptv.Id);
-                    log?.Invoke($"  Added reference point '{created.Id}' at the isocenter.");
+                    log?.Invoke("  Could not identify the target reference point to rename "
+                              + (rps.Count == 0 ? "(the plan has none yet)." : "(multiple present)."));
+                    return;
                 }
-                else
-                {
-                    log?.Invoke("  No primary reference point and no beam; skipped reference point.");
-                }
+
+                string old = target.Id;
+                target.Id = ptv.Id;
+                log?.Invoke($"  Renamed reference point '{old}' -> '{ptv.Id}'.");
             }
             catch (Exception ex)
             {
-                log?.Invoke($"  WARNING: could not name reference point '{ptv.Id}': {ex.Message}");
+                log?.Invoke($"  WARNING: could not rename reference point to '{ptv.Id}': {ex.Message}");
             }
         }
 
