@@ -62,6 +62,11 @@
     <Compile Include="PatientStructures.cs" />
     <Compile Include="OrganNameMatcher.cs" />
     <Compile Include="AutoMatcher.cs" />
+    <Compile Include="KdTree3D.cs" />
+    <Compile Include="VoxelMask.cs" />
+    <Compile Include="Rasterizer.cs" />
+    <Compile Include="Metrics.cs" />
+    <Compile Include="Comparison.cs" />
     <Compile Include="ResultsWindow.cs" />
   </ItemGroup>
   <Import Project="$(MSBuildToolsPath)\Microsoft.CSharp.targets" />

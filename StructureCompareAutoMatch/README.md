@@ -1,9 +1,12 @@
 # StructureCompareAutoMatch
 
 The **automatic** sibling of `StructureCompareLink`. No manual linking: it reads **every structure
-set on the open patient**, matches organs across them **by name**, keeps the organs that appear in
-two or more sets, and saves the result as a **semicolon-delimited CSV**. Organs with no counterpart
-in another set are ignored.
+set on the open patient**, matches organs across them **by name**, and — for each matched
+ground-truth vs AI pair — **computes the comparison metrics** (DICE, Jaccard, Hausdorff, HD95, ASSD,
+volumes, centre-of-mass difference) directly in ESAPI, then saves everything as a
+**semicolon-delimited CSV**. Organs with no counterpart in another set are ignored.
+
+This is the full StructureCompare pipeline running inside Eclipse — no DICOM export, no Python.
 
 ## Matching rules
 
@@ -40,25 +43,48 @@ Roles are assigned automatically from the structure-set name:
 There should be exactly one ground-truth set; if none or more than one lacks `auto`, the summary
 shows a warning so you can rename before relying on the output.
 
+## Metrics
+
+For each matched organ, the ground-truth structure is compared against every AI structure in the
+group. The metrics are computed by rasterizing both structures to the image voxel grid and match
+`medpy.metric.binary` (the library the Python `StructureCompare` uses) — validated to ~1e-15 against
+a scipy Euclidean-distance-transform reference:
+
+- **DICE**, **Jaccard** — voxel overlap.
+- **Hausdorff_mm**, **HD95_mm**, **ASSD_mm** — surface distances between the structures' border
+  voxels (nearest-neighbour via a k-d tree). `hd` = max of the two directed maxima; `hd95` = 95th
+  percentile of both directed distance sets; `assd` = mean of the two directed means.
+- **Volume_GT_cc**, **Volume_AI_cc**, **VolumeDiff_cc** (AI − GT), **COMdiff_mm** (centre-of-mass
+  distance).
+
+A pair is skipped (metrics blank, reason in the **Note** column) when the two structures are on
+different image grids, when one is empty, or when the shared bounding box would exceed 25 M voxels
+(guards against a body/couch match). Ground truth vs AI is decided by name — see below.
+
+## Ground truth vs AI (by name)
+
+- The set whose name does **not** contain `auto` (any case) is the **GroundTruth** (manual reference).
+- Sets whose name **does** contain `auto`/`Auto` are the **AI**-segmented sets, compared against it.
+
+There should be exactly one ground-truth set; if none or more than one lacks `auto`, the summary
+shows a warning so you can rename before relying on the output.
+
 ## CSV format
 
-Semicolon-delimited, UTF-8 with BOM (opens directly in Excel where `;` is the list separator):
+Semicolon-delimited, UTF-8 with BOM (opens directly in Excel where `;` is the list separator). One
+row per ground-truth vs AI comparison:
 
 ```
-Group;MatchKey;Role;StructureSetId;StructureId
-1;parotid|L;GroundTruth;Manual;Parotid_L
-1;parotid|L;AI;AutoContour1;parotid_sin
-2;v:t11;GroundTruth;Manual;Th11
-2;v:t11;AI;AutoContour1;T11
+Group;MatchKey;GroundTruthSet;GroundTruthStructure;AiSet;AiStructure;DICE;Jaccard;Hausdorff_mm;HD95_mm;ASSD_mm;Volume_GT_cc;Volume_AI_cc;VolumeDiff_cc;COMdiff_mm;Note
+1;parotid|L;Manual;Parotid_L;AutoContour1;parotid_sin;0.87;0.77;5.83;3.16;1.02;12.4;13.1;0.7;1.05;
+2;v:t11;Manual;Th11;AutoContour1;T11;0.91;0.83;4.12;2.24;0.81;9.8;9.5;-0.3;0.62;
 ```
 
-- **Group** — rows sharing a group number are the same organ matched across sets.
-- **MatchKey** — the canonical key the matcher derived (`organ`, `organ|L`/`|R`, or `v:<label>`).
-- **Role** — `GroundTruth` (name without `auto`) or `AI` (name with `auto`); the ground-truth row is
-  written first within each group. Mirrors the ground-truth vs compare split in
-  `StructureCompare/analysis/patient.py`.
-- **StructureSetId** — the set (method) the structure came from.
-- **StructureId** — the ROI name as it appears in that set.
+- **Group / MatchKey** — the matched organ and its canonical key (`organ`, `organ|L`/`|R`, `v:<label>`).
+- **GroundTruthSet / GroundTruthStructure** — the reference (non-`auto`) set and its ROI name.
+- **AiSet / AiStructure** — the AI (`auto`) set and its ROI name.
+- **Metric columns** — see above; blank when the pair was skipped.
+- **Note** — why a pair was skipped, if it was.
 
 ## How to run
 
@@ -66,13 +92,19 @@ Group;MatchKey;Role;StructureSetId;StructureId
    dependencies** — only WPF and the shared ESAPI assemblies in `..\ESAPI\`.
 2. Point the Debug `OutputPath` in the `.csproj` at your Eclipse published-scripts folder, or copy
    the DLL there.
-3. Run it from Eclipse with a **patient open**. It scans all structure sets, matches automatically,
-   and shows a summary window with a **Save CSV…** button. The script is **read-only**.
+3. Run it from Eclipse with a **patient open**. It matches and computes metrics automatically (this
+   can take a little while for many organs — Eclipse shows a busy cursor), then shows a summary
+   window with a **Save CSV…** button. The script is **read-only**.
 
 ## Layout
 
-- `Script.cs` — entry point (`VMS.TPS.Script`): gathers, matches, shows the summary.
-- `PatientStructures.cs` — snapshots every structure set on the patient into ESAPI-free DTOs.
+- `Script.cs` — entry point (`VMS.TPS.Script`): gathers, matches, computes metrics, shows the summary.
+- `PatientStructures.cs` — snapshots every structure set into DTOs + live ESAPI handles.
 - `OrganNameMatcher.cs` — the name-normalization core (the matching rules above).
-- `AutoMatcher.cs` — groups structures by match key, keeps 2+-set groups, writes the CSV.
+- `AutoMatcher.cs` — groups structures by match key, keeps 2+-set groups, assigns GT/AI roles.
+- `Rasterizer.cs` — fills structure contours to aligned binary voxel masks on the image grid.
+- `VoxelMask.cs` — the binary mask (counts, centroid, border voxels).
+- `KdTree3D.cs` — nearest-neighbour search for the surface-distance metrics.
+- `Metrics.cs` — DICE / Jaccard / Hausdorff / HD95 / ASSD / volume / COM from two masks.
+- `Comparison.cs` — builds GT-vs-AI rows, computes metrics, writes the CSV.
 - `ResultsWindow.cs` — the code-only WPF summary window + Save dialog.

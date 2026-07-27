@@ -1,8 +1,6 @@
 using System;
 using System.Collections.Generic;
-using System.IO;
 using System.Linq;
-using System.Text;
 
 namespace StructureCompareAutoMatch
 {
@@ -94,47 +92,6 @@ namespace StructureCompareAutoMatch
                 })
                 .OrderBy(g => g.Key, StringComparer.OrdinalIgnoreCase)
                 .ToList();
-        }
-
-        /// <summary>
-        /// Writes the matched groups as a semicolon-delimited CSV with columns
-        /// <c>Group;MatchKey;StructureSetId;StructureId</c>. Rows that share a Group are the same
-        /// organ matched across sets. UTF-8 with BOM so Excel (with ';' as the list separator) opens
-        /// it cleanly. Returns the number of data rows written.
-        /// </summary>
-        public static int WriteCsv(string path, IReadOnlyList<MatchGroup> groups)
-        {
-            var sb = new StringBuilder();
-            sb.Append("Group;MatchKey;Role;StructureSetId;StructureId\r\n");
-
-            int rows = 0;
-            int groupNumber = 0;
-            foreach (MatchGroup group in groups)
-            {
-                groupNumber++;
-                foreach (MatchMember m in group.Members)
-                {
-                    sb.Append(groupNumber.ToString(System.Globalization.CultureInfo.InvariantCulture));
-                    sb.Append(';');
-                    sb.Append(Escape(group.Key));
-                    sb.Append(';');
-                    sb.Append(m.Role);
-                    sb.Append(';');
-                    sb.Append(Escape(m.SetId));
-                    sb.Append(';');
-                    sb.Append(Escape(m.StructureId));
-                    sb.Append("\r\n");
-                    rows++;
-                }
-            }
-
-            File.WriteAllText(path, sb.ToString(), new UTF8Encoding(encoderShouldEmitUTF8Identifier: true));
-            return rows;
-        }
-
-        private static string Escape(string value)
-        {
-            return (value ?? string.Empty).Replace(';', ',');
         }
     }
 }

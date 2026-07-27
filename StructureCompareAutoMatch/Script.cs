@@ -35,7 +35,8 @@ namespace VMS.TPS
                 return;
             }
 
-            List<StructureSetInfo> sets = PatientStructures.Gather(patient);
+            GatherResult gather = PatientStructures.Gather(patient);
+            List<StructureSetInfo> sets = gather.Sets;
             if (sets.Count < 2)
             {
                 MessageBox.Show(
@@ -46,7 +47,12 @@ namespace VMS.TPS
             }
 
             List<MatchGroup> groups = AutoMatcher.Match(sets);
-            ResultsWindow.Show(patient.Id, sets, groups);
+
+            // Compute the metrics on the ESAPI thread (rasterization needs the live structures). This
+            // can take a little while for many organs; Eclipse shows a busy cursor meanwhile.
+            List<ComparisonRow> rows = Comparison.Build(groups, gather);
+
+            ResultsWindow.Show(patient.Id, sets, groups, rows);
         }
     }
 }
