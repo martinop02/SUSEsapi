@@ -46,9 +46,11 @@ shows a warning so you can rename before relying on the output.
 ## Metrics
 
 For each matched organ, the ground-truth structure is compared against every AI structure in the
-group. The metrics are computed by rasterizing both structures to the image voxel grid and match
-`medpy.metric.binary` (the library the Python `StructureCompare` uses) — validated to ~1e-15 against
-a scipy Euclidean-distance-transform reference:
+group. Both structures are rasterized onto the ground truth's image voxel grid using ESAPI's own
+`Structure.IsPointInsideSegment` test (the reliable method used elsewhere in this repo), so it works
+even when the AI set was drawn on a different image instance, as long as it shares the frame of
+reference. The metric formulas match `medpy.metric.binary` (the library the Python `StructureCompare`
+uses) — validated to ~1e-15 against a scipy Euclidean-distance-transform reference:
 
 - **DICE**, **Jaccard** — voxel overlap.
 - **Hausdorff_mm**, **HD95_mm**, **ASSD_mm** — surface distances between the structures' border
@@ -57,9 +59,10 @@ a scipy Euclidean-distance-transform reference:
 - **Volume_GT_cc**, **Volume_AI_cc**, **VolumeDiff_cc** (AI − GT), **COMdiff_mm** (centre-of-mass
   distance).
 
-A pair is skipped (metrics blank, reason in the **Note** column) when the two structures are on
-different image grids, when one is empty, or when the shared bounding box would exceed 25 M voxels
-(guards against a body/couch match). Ground truth vs AI is decided by name — see below.
+A pair is skipped (metrics blank, reason in the **Note** column) when the two structures are in
+different frames of reference (no shared coordinate system), when one has no segment, or when the
+shared bounding box would exceed 25 M voxels (guards against a body/couch match). Ground truth vs AI
+is decided by name — see below.
 
 ## Ground truth vs AI (by name)
 

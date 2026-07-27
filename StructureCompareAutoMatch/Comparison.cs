@@ -80,9 +80,17 @@ namespace StructureCompareAutoMatch
             StructureHandle hAi = gather.Handle(row.AiSetId, row.AiStructureId);
             if (hGt == null || hAi == null) { row.Note = "structure handle missing"; return; }
 
-            if (hGt.ImageUid == null || hAi.ImageUid == null || hGt.ImageUid != hAi.ImageUid)
+            // Both structures are rasterized onto the ground truth's image grid. That only makes sense
+            // when they share a frame of reference (same coordinate system); otherwise a registration
+            // would be needed, which is out of scope.
+            if (hGt.Image == null)
             {
-                row.Note = "ground truth and AI are on different images (grid mismatch)";
+                row.Note = "ground-truth set has no image to rasterize on";
+                return;
+            }
+            if (hGt.ForUid == null || hAi.ForUid == null || hGt.ForUid != hAi.ForUid)
+            {
+                row.Note = "ground truth and AI are in different frames of reference";
                 return;
             }
 
