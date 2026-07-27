@@ -17,8 +17,8 @@
     <DebugSymbols>true</DebugSymbols>
     <DebugType>full</DebugType>
     <Optimize>false</Optimize>
-    <!-- Point this at your Eclipse published-scripts folder to deploy on build. -->
-    <OutputPath>bin\Debug\</OutputPath>
+    <!-- Deploys to the shared published-scripts location, alongside PalliativeAutoPlan. -->
+    <OutputPath>\\10.92.139.197\Sharedfiles\Personlige mapper\Martin\Scripts\Nyeste Versjoner\StructureCompareLink\</OutputPath>
     <DefineConstants>DEBUG;TRACE</DefineConstants>
     <ErrorReport>prompt</ErrorReport>
     <WarningLevel>4</WarningLevel>
