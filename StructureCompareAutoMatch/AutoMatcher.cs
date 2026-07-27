@@ -12,6 +12,9 @@ namespace StructureCompareAutoMatch
         public string SetId { get; set; }
         public string StructureId { get; set; }
         public bool IsEmpty { get; set; }
+
+        /// <summary><see cref="AutoMatcher.GroundTruthRole"/> or <see cref="AutoMatcher.AiRole"/>.</summary>
+        public string Role { get; set; }
     }
 
     /// <summary>
@@ -36,6 +39,21 @@ namespace StructureCompareAutoMatch
     /// </summary>
     public static class AutoMatcher
     {
+        public const string GroundTruthRole = "GroundTruth";
+        public const string AiRole = "AI";
+
+        // Site convention: the manual/reference set's name does NOT contain "auto"; the AI-segmented
+        // sets do. So the ground truth is simply the set(s) without "auto" in the id.
+        public static bool IsAuto(string setId)
+        {
+            return (setId ?? string.Empty).IndexOf("auto", StringComparison.OrdinalIgnoreCase) >= 0;
+        }
+
+        public static string RoleOf(string setId)
+        {
+            return IsAuto(setId) ? AiRole : GroundTruthRole;
+        }
+
         public static List<MatchGroup> Match(IEnumerable<StructureSetInfo> sets)
         {
             var byKey = new Dictionary<string, MatchGroup>(StringComparer.Ordinal);
@@ -57,6 +75,7 @@ namespace StructureCompareAutoMatch
                         SetId = set.Id,
                         StructureId = s.Id,
                         IsEmpty = s.IsEmpty,
+                        Role = RoleOf(set.Id),
                     });
                 }
             }
@@ -67,7 +86,8 @@ namespace StructureCompareAutoMatch
                 .Select(g =>
                 {
                     g.Members = g.Members
-                        .OrderBy(m => m.SetId, StringComparer.OrdinalIgnoreCase)
+                        .OrderByDescending(m => m.Role == GroundTruthRole)   // ground truth first
+                        .ThenBy(m => m.SetId, StringComparer.OrdinalIgnoreCase)
                         .ThenBy(m => m.StructureId, StringComparer.OrdinalIgnoreCase)
                         .ToList();
                     return g;
@@ -85,7 +105,7 @@ namespace StructureCompareAutoMatch
         public static int WriteCsv(string path, IReadOnlyList<MatchGroup> groups)
         {
             var sb = new StringBuilder();
-            sb.Append("Group;MatchKey;StructureSetId;StructureId\r\n");
+            sb.Append("Group;MatchKey;Role;StructureSetId;StructureId\r\n");
 
             int rows = 0;
             int groupNumber = 0;
@@ -97,6 +117,8 @@ namespace StructureCompareAutoMatch
                     sb.Append(groupNumber.ToString(System.Globalization.CultureInfo.InvariantCulture));
                     sb.Append(';');
                     sb.Append(Escape(group.Key));
+                    sb.Append(';');
+                    sb.Append(m.Role);
                     sb.Append(';');
                     sb.Append(Escape(m.SetId));
                     sb.Append(';');

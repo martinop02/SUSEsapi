@@ -37,8 +37,12 @@ namespace StructureCompareAutoMatch
 
             var root = new DockPanel();
 
-            var header = new Border { Background = Bar, Padding = new Thickness(12, 8, 12, 8) };
-            header.Child = new TextBlock
+            List<string> groundTruthSets = sets.Where(s => !AutoMatcher.IsAuto(s.Id))
+                                               .Select(s => s.Id).ToList();
+            int aiSets = sets.Count - groundTruthSets.Count;
+
+            var headerStack = new StackPanel();
+            headerStack.Children.Add(new TextBlock
             {
                 Foreground = Frozen(0xEE, 0xEE, 0xEE),
                 FontWeight = FontWeights.Bold,
@@ -46,7 +50,24 @@ namespace StructureCompareAutoMatch
                 Text = $"{groups.Count} organ(s) matched across {sets.Count} structure set(s) — " +
                        $"{matchedStructures} of {totalStructures} structures. Unmatched structures ignored.",
                 TextWrapping = TextWrapping.Wrap,
-            };
+            });
+
+            // Ground truth = the set whose name has no "auto"; AI = the sets whose name has "auto".
+            string gtLine = groundTruthSets.Count == 1
+                ? $"Ground truth: '{groundTruthSets[0]}'   ·   AI set(s): {aiSets}"
+                : $"⚠ Expected exactly one ground-truth set (no 'auto' in the name) but found " +
+                  $"{groundTruthSets.Count}: {(groundTruthSets.Count == 0 ? "(none)" : string.Join(", ", groundTruthSets))}. " +
+                  "Rename the sets so exactly one lacks 'auto'.";
+            headerStack.Children.Add(new TextBlock
+            {
+                Foreground = groundTruthSets.Count == 1 ? Frozen(0xC8, 0xC8, 0xC8) : Frozen(0xE0, 0xC0, 0x4F),
+                FontSize = 12,
+                Margin = new Thickness(0, 4, 0, 0),
+                Text = gtLine,
+                TextWrapping = TextWrapping.Wrap,
+            });
+
+            var header = new Border { Background = Bar, Padding = new Thickness(12, 8, 12, 8), Child = headerStack };
             DockPanel.SetDock(header, Dock.Top);
             root.Children.Add(header);
 
@@ -93,9 +114,10 @@ namespace StructureCompareAutoMatch
             foreach (MatchGroup g in groups)
             {
                 n++;
-                sb.AppendLine($"[{n}] {g.Key}   ({g.SetCount} sets)");
+                bool hasGt = g.Members.Any(m => m.Role == AutoMatcher.GroundTruthRole);
+                sb.AppendLine($"[{n}] {g.Key}   ({g.SetCount} sets){(hasGt ? "" : "   ⚠ no ground truth")}");
                 foreach (MatchMember m in g.Members)
-                    sb.AppendLine($"       {m.SetId}  :  {m.StructureId}{(m.IsEmpty ? "   (empty)" : "")}");
+                    sb.AppendLine($"       {m.Role,-11} {m.SetId}  :  {m.StructureId}{(m.IsEmpty ? "   (empty)" : "")}");
                 sb.AppendLine();
             }
             return sb.ToString();

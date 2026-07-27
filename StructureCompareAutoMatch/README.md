@@ -30,25 +30,35 @@ Vertebra regions: `C`, `T`/`Th`, `L`, `S` + 1–2 digits.
 
 Both are one-line additions to the tables in `OrganNameMatcher.cs` if a site needs them.
 
+## Ground truth vs AI (by name)
+
+Roles are assigned automatically from the structure-set name:
+
+- The set whose name does **not** contain `auto` (any case) is the **GroundTruth** (manual reference).
+- Sets whose name **does** contain `auto`/`Auto` are the **AI**-segmented sets, compared against it.
+
+There should be exactly one ground-truth set; if none or more than one lacks `auto`, the summary
+shows a warning so you can rename before relying on the output.
+
 ## CSV format
 
 Semicolon-delimited, UTF-8 with BOM (opens directly in Excel where `;` is the list separator):
 
 ```
-Group;MatchKey;StructureSetId;StructureId
-1;parotid|L;CT_AI;Parotid_L
-1;parotid|L;CT_Manual;parotid_sin
-2;v:t11;CT_AI;Th11
-2;v:t11;CT_Manual;T11
+Group;MatchKey;Role;StructureSetId;StructureId
+1;parotid|L;GroundTruth;Manual;Parotid_L
+1;parotid|L;AI;AutoContour1;parotid_sin
+2;v:t11;GroundTruth;Manual;Th11
+2;v:t11;AI;AutoContour1;T11
 ```
 
 - **Group** — rows sharing a group number are the same organ matched across sets.
 - **MatchKey** — the canonical key the matcher derived (`organ`, `organ|L`/`|R`, or `v:<label>`).
+- **Role** — `GroundTruth` (name without `auto`) or `AI` (name with `auto`); the ground-truth row is
+  written first within each group. Mirrors the ground-truth vs compare split in
+  `StructureCompare/analysis/patient.py`.
 - **StructureSetId** — the set (method) the structure came from.
 - **StructureId** — the ROI name as it appears in that set.
-
-Matching is symmetric (no ground-truth column). If you need a ground-truth vs compare split for the
-downstream metrics, use `StructureCompareLink`, or say the word and it can be added here too.
 
 ## How to run
 
