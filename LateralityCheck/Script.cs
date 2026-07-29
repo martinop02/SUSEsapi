@@ -21,17 +21,19 @@ namespace VMS.TPS
     ///             (contains both a left and a right token).
     ///
     /// A "side token" is matched only at a boundary: the start/end of the string, one of
-    /// ('_', '-', ' '), or a CamelCase transition (a lowercase/digit followed by an uppercase
-    /// letter). The CamelCase rule lets attached tokens match while keeping single letters safe:
+    /// ('_', '-', ' '), or a case transition — lower/digit -> Upper, or Upper -> lower. Those rules
+    /// let attached tokens match while keeping single letters safe:
     ///   "Lungs" / "Cord" / "L1_S1"  -> no match (no boundary around the letter)
     ///   "Lung_S" / "PTV-D"          -> match   (delimited)
-    ///   "BreastL" / "BreastLeft"    -> match   (CamelCase capital)
+    ///   "BreastL" / "BreastLeft"    -> match   (lower->Upper: capitalised token)
+    ///   "IMNd"                      -> match   (Upper->lower: 'd' after 'N')
     ///
     ///   LEFT  : left, venstre, sin, si, l, s          (case-insensitive)
     ///   RIGHT : right, høyre, hoyre, dxt, dx, r, d     (case-insensitive)
     ///
-    /// Note: an all-caps concatenation like "BREASTL" or a leading single capital run like
-    /// "LBreast" is intentionally NOT matched — there is no lower->upper transition to anchor on.
+    /// Trade-off of the Upper->lower rule: an all-caps token trailed by a lowercase side letter,
+    /// e.g. "OARs"/"PTVs", resolves to LEFT (the trailing 's'). That is intended and cannot be told
+    /// apart structurally from a real appended side such as "IMNd".
     ///
     /// The plan side comes from PlanSetup.Id; the prescription side is pooled from its Site, Id,
     /// Name, and each target's TargetId. If a source contains both a LEFT and a RIGHT token it is
@@ -41,13 +43,22 @@ namespace VMS.TPS
     {
         public Script() { }
 
-        // A token counts only at a boundary. A boundary is: start/end of the string, one of
-        // ('_', '-', ' '), OR a CamelCase transition (a lowercase/digit immediately followed by an
-        // uppercase letter). The CamelCase option is what lets attached tokens match —
-        // "BreastL" / "BreastLeft" / "LeftBreast" -> LEFT — while still rejecting "Lungs"/"Cord"
-        // (no case transition around the letter) and spine levels like "L1_S1" (letter is followed
-        // by a digit, not a boundary).
-        private const string Lead  = @"(?:^|(?<=[ _\-])|(?<=[a-z0-9])(?=[A-Z]))";
+        // A token counts only at a boundary. The leading boundary is: start of the string, one of
+        // ('_', '-', ' '), OR a case transition in either direction —
+        //   lower/digit -> Upper   lets an attached token that starts with a capital match:
+        //                          "BreastL" / "BreastLeft" / "LeftBreast" -> LEFT
+        //   Upper -> lower         lets a lowercase token appended to an ALL-CAPS abbreviation
+        //                          match: "IMNd" -> RIGHT (the 'd' after 'N').
+        // The trailing boundary allows end, a delimiter, or lower/digit -> Upper only. The
+        // Upper -> lower transition is deliberately NOT a trailing boundary — otherwise a leading
+        // capital like the 'R' in "Rectum" would falsely close a token. Together these still reject
+        // "Lungs"/"Cord" (no transition around the letter) and spine levels like "L1_S1" (letter
+        // followed by a digit, not a boundary).
+        //
+        // Caveat of the Upper->lower rule: an all-caps token followed by a lowercase side letter is
+        // read as a side, so "OARs"/"PTVs" resolve to LEFT (trailing 's' = sinister). That is the
+        // intended trade-off for catching "IMNd" and cannot be distinguished structurally.
+        private const string Lead  = @"(?:^|(?<=[ _\-])|(?<=[a-z0-9])(?=[A-Z])|(?<=[A-Z])(?=[a-z]))";
         private const string Trail = @"(?:$|(?=[ _\-])|(?<=[a-z0-9])(?=[A-Z]))";
 
         // The token alternation is case-insensitive via the inline (?i:...) group, but the
