@@ -21,8 +21,10 @@ namespace VMS.TPS
     /// CouchShiftCheck — one self-contained, read-only ESAPI script that:
     ///   1. reads the patient orientation from the image series (Image.ImagingOrientation),
     ///   2. determines the treated side from the plan id and the RT prescription (laterality),
-    ///   3. parses the Lng / Lat / Vrt couch shift out of each field's free-text setup note, and
-    ///   4. checks that the lateral shift moves toward the treated side, given the orientation.
+    ///   3. parses the Lng / Lat / Vrt couch shift out of each field's free-text setup note,
+    ///   4. checks that the lateral shift moves toward the treated side, given the orientation, and
+    ///   5. for a breast plan (name/prescription contains breast / mamma / mam / br / bryst), checks
+    ///      that the vertical shift is positive.
     ///
     /// Everything lives in this single file (the tiny log window is at the bottom). Nothing on the
     /// patient is modified.
@@ -35,9 +37,10 @@ namespace VMS.TPS
         //  Geometry convention (READ THIS before trusting the lateral check)
         // ===================================================================================
         // For Head-First-Supine, a POSITIVE lateral value in the setup note moves the patient
-        // toward their RIGHT (dexter); a negative value toward their LEFT (sinister). This is taken
-        // from the sample notes ("Lat: +7 cm (dxt)", "Lat: -9cm (sin)"). If your clinic/machine uses
-        // the opposite sign, flip this one constant and the whole check inverts consistently.
+        // toward their RIGHT (dexter); a negative value toward their LEFT (sinister). Confirmed
+        // correct against the clinic's convention (matches the sample notes' "+ (dxt)" / "- (sin)").
+        // If a different machine ever uses the opposite sign, flip this one constant and the whole
+        // check inverts consistently.
         private const bool PositiveLatIsPatientRightHFS = true;
 
         // ===================================================================================
@@ -55,6 +58,14 @@ namespace VMS.TPS
         private static readonly Regex RightRx = new Regex(
             Lead + "(?i:høyre|hoyre|right|dxt|dx|r|d)" + Trail,
             RegexOptions.Compiled | RegexOptions.CultureInvariant);
+
+        // Breast-site detection. Distinctive full words (breast / mamma / Norwegian bryst) are safe
+        // to match as substrings; the short abbreviations "br"/"mam" require a token boundary so
+        // "Brain"/"Bronchus"/"Vertebra"/"Cerebrum" are not mistaken for breast.
+        private static readonly Regex BreastWord = new Regex(
+            @"(?i:breast|mamma|bryst)", RegexOptions.Compiled | RegexOptions.CultureInvariant);
+        private static readonly Regex BreastAbbr = new Regex(
+            Lead + @"(?i:br|mam)" + Trail, RegexOptions.Compiled | RegexOptions.CultureInvariant);
 
         private enum Side { None, Left, Right, Ambiguous }
         private enum Status { Ok, Warning, Inconclusive }
@@ -132,6 +143,12 @@ namespace VMS.TPS
             // Side actually treated, for the shift check: prefer the plan, fall back to the rx.
             Side treatedSide = planSide != Side.None ? planSide : rxSide;
 
+            // Breast site? (from plan id + prescription strings). If so we can also require Vrt > 0.
+            var siteTexts = new List<string> { plan.Id };
+            siteTexts.AddRange(rxSources);
+            bool breast = IsBreast(siteTexts);
+            log($"Site            : {(breast ? "BREAST detected (vertical shift expected positive)" : "breast not detected")}");
+
             // --- 3 & 4) Setup notes: parse shifts and check the lateral direction ---------------
             var beams = (plan.Beams ?? Enumerable.Empty<Beam>())
                         .OrderByDescending(b => b.IsSetupField).ToList();
@@ -153,6 +170,9 @@ namespace VMS.TPS
 
                 var (shiftStatus, shiftNote) = CheckLateralDirection(s, treatedSide, orient);
                 log($"lateral check  -> {shiftStatus.ToString().ToUpper()}: {shiftNote}");
+
+                var (vertStatus, vertNote) = CheckVertical(s, breast);
+                log($"vertical check -> {vertStatus.ToString().ToUpper()}: {vertNote}");
             }
 
             log("");
@@ -199,6 +219,27 @@ namespace VMS.TPS
 
             // implied == treated but the note's own annotation contradicts it.
             return (Status.Warning, $"{move}, matching the {treated.ToString().ToUpper()} plan, but{annNote}");
+        }
+
+        // For a breast plan the vertical couch shift is expected to be positive (the sample notes
+        // all read "Vrt fra dpl: <positive> cm"). Only checked when the site looks like breast.
+        private static (Status, string) CheckVertical(NoteShift s, bool breast)
+        {
+            if (!breast)           return (Status.Ok, "not a breast plan — vertical sign not checked.");
+            if (!s.VrtCm.HasValue) return (Status.Inconclusive, "no vertical (Vrt) value found in the note.");
+            double v = s.VrtCm.Value;
+            string val = $"{(v > 0 ? "+" : "")}{v.ToString("0.0", CultureInfo.InvariantCulture)} cm";
+            return v > 0
+                ? (Status.Ok, $"Vrt {val} is positive, as expected for a breast plan.")
+                : (Status.Warning, $"Vrt {val} is not positive; a breast plan is expected to be positive.");
+        }
+
+        private static bool IsBreast(IEnumerable<string> texts)
+        {
+            foreach (var t in texts)
+                if (!string.IsNullOrWhiteSpace(t) && (BreastWord.IsMatch(t) || BreastAbbr.IsMatch(t)))
+                    return true;
+            return false;
         }
 
         // Left/right only makes sense as a couch lateral axis for supine/prone head/feet-first.
