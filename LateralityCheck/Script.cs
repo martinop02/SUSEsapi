@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Reflection;
@@ -17,14 +17,18 @@ namespace VMS.TPS
     /// LateralityCheck — a read-only sanity check that the active plan and its prescription
     /// reference the same side (both LEFT or both RIGHT).
     ///
-    /// A "side token" is matched only when it appears as a delimited segment — i.e. preceded by
-    /// the start of the string or one of ('_', '-', ' '), and followed by the end of the string or
-    /// one of those same delimiters. That boundary rule is what makes the single-letter tokens safe:
-    ///   "Lungs" / "Cord"   -> no match (no delimiter around the letter)
-    ///   "Lung_S" / "PTV-D" -> match   (delimited segment)
+    /// A "side token" is matched only at a boundary: the start/end of the string, one of
+    /// ('_', '-', ' '), or a CamelCase transition (a lowercase/digit followed by an uppercase
+    /// letter). The CamelCase rule lets attached tokens match while keeping single letters safe:
+    ///   "Lungs" / "Cord" / "L1_S1"  -> no match (no boundary around the letter)
+    ///   "Lung_S" / "PTV-D"          -> match   (delimited)
+    ///   "BreastL" / "BreastLeft"    -> match   (CamelCase capital)
     ///
-    ///   LEFT  : left, sin, si, l, s        (case-insensitive)
-    ///   RIGHT : right, dxt, dx, r, d       (case-insensitive)
+    ///   LEFT  : left, venstre, sin, si, l, s          (case-insensitive)
+    ///   RIGHT : right, høyre, hoyre, dxt, dx, r, d     (case-insensitive)
+    ///
+    /// Note: an all-caps concatenation like "BREASTL" or a leading single capital run like
+    /// "LBreast" is intentionally NOT matched — there is no lower->upper transition to anchor on.
     ///
     /// The plan side comes from PlanSetup.Id; the prescription side is pooled from its Site, Id,
     /// Name, and each target's TargetId. If a source contains both a LEFT and a RIGHT token it is
@@ -34,15 +38,24 @@ namespace VMS.TPS
     {
         public Script() { }
 
-        // Delimiter class used for both the leading and trailing boundary of a side token.
-        private const string Delim = @"[ _\-]";
+        // A token counts only at a boundary. A boundary is: start/end of the string, one of
+        // ('_', '-', ' '), OR a CamelCase transition (a lowercase/digit immediately followed by an
+        // uppercase letter). The CamelCase option is what lets attached tokens match —
+        // "BreastL" / "BreastLeft" / "LeftBreast" -> LEFT — while still rejecting "Lungs"/"Cord"
+        // (no case transition around the letter) and spine levels like "L1_S1" (letter is followed
+        // by a digit, not a boundary).
+        private const string Lead  = @"(?:^|(?<=[ _\-])|(?<=[a-z0-9])(?=[A-Z]))";
+        private const string Trail = @"(?:$|(?=[ _\-])|(?<=[a-z0-9])(?=[A-Z]))";
 
-        // Longest tokens first is not required (boundaries make them unambiguous) but keeps the
-        // regex readable. The trailing look-ahead / leading look-behind enforce the segment rule.
-        private static readonly Regex LeftRx =
-            new Regex($@"(?<=^|{Delim})(left|sin|si|l|s)(?=$|{Delim})", RegexOptions.IgnoreCase | RegexOptions.Compiled);
-        private static readonly Regex RightRx =
-            new Regex($@"(?<=^|{Delim})(right|dxt|dx|r|d)(?=$|{Delim})", RegexOptions.IgnoreCase | RegexOptions.Compiled);
+        // The token alternation is case-insensitive via the inline (?i:...) group, but the
+        // boundaries above stay case-sensitive so [A-Z]/[a-z] keep their literal meaning — hence
+        // RegexOptions.IgnoreCase is deliberately NOT set globally.
+        private static readonly Regex LeftRx = new Regex(
+            Lead + @"(?i:venstre|left|sin|si|l|s)" + Trail,
+            RegexOptions.Compiled | RegexOptions.CultureInvariant);
+        private static readonly Regex RightRx = new Regex(
+            Lead + "(?i:h\u00f8yre|hoyre|right|dxt|dx|r|d)" + Trail,
+            RegexOptions.Compiled | RegexOptions.CultureInvariant);
 
         private enum Side { None, Left, Right, Ambiguous }
 
