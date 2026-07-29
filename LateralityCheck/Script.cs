@@ -15,7 +15,10 @@ namespace VMS.TPS
 {
     /// <summary>
     /// LateralityCheck — a read-only sanity check that the active plan and its prescription
-    /// reference the same side (both LEFT or both RIGHT).
+    /// reference the same side. It reports a single outcome plus a short reason:
+    ///   OK      : neither has a laterality, or both have the same laterality.
+    ///   WARNING : the two disagree, only one has a laterality, or a name is itself ambiguous
+    ///             (contains both a left and a right token).
     ///
     /// A "side token" is matched only at a boundary: the start/end of the string, one of
     /// ('_', '-', ' '), or a CamelCase transition (a lowercase/digit followed by an uppercase
@@ -58,6 +61,7 @@ namespace VMS.TPS
             RegexOptions.Compiled | RegexOptions.CultureInvariant);
 
         private enum Side { None, Left, Right, Ambiguous }
+        private enum Status { Ok, Warning }
 
         [MethodImpl(MethodImplOptions.NoInlining)]
         public void Execute(ScriptContext context)
@@ -97,30 +101,45 @@ namespace VMS.TPS
             Side rxSide = Classify(rxSources.Select(StripLabel), out var rxHits);
             log($"Prescription    : {rxSide}   [{string.Join(", ", rxSources)}]{FormatHits(rxHits)}");
 
-            // --- Verdict -------------------------------------------------------------------------
+            // --- Verdict: OK or WARNING, with a short reason -------------------------------------
+            var (status, note) = Evaluate(planSide, rxSide);
             log("");
             log(new string('-', 60));
-            if (planSide == Side.None || rxSide == Side.None)
-            {
-                log("RESULT: INCONCLUSIVE — no side token found on " +
-                    (planSide == Side.None && rxSide == Side.None ? "either the plan or the prescription."
-                     : planSide == Side.None ? "the plan." : "the prescription."));
-            }
-            else if (planSide == Side.Ambiguous || rxSide == Side.Ambiguous)
-            {
-                log("RESULT: AMBIGUOUS — both LEFT and RIGHT tokens found on " +
-                    (planSide == Side.Ambiguous ? "the plan" : "the prescription") + ". Review manually.");
-            }
-            else if (planSide == rxSide)
-            {
-                log($"RESULT: OK — plan and prescription are both {planSide.ToString().ToUpper()}.");
-            }
-            else
-            {
-                log($"RESULT: MISMATCH — plan is {planSide.ToString().ToUpper()} but prescription is " +
-                    $"{rxSide.ToString().ToUpper()}. Verify before treating.");
-            }
+            log($"{status.ToString().ToUpper()}: {note}");
         }
+
+        // Reduce the two detected sides to a single OK/WARNING outcome plus a short reason.
+        //   OK      : neither side has laterality, OR both have the same laterality.
+        //   WARNING : the two sides disagree, one has laterality and the other does not, or a
+        //             name is itself ambiguous (contains both a left and a right token).
+        private static (Status status, string note) Evaluate(Side plan, Side rx)
+        {
+            if (plan == Side.Ambiguous || rx == Side.Ambiguous)
+            {
+                string who = plan == Side.Ambiguous && rx == Side.Ambiguous ? "plan and prescription both reference"
+                           : plan == Side.Ambiguous ? "plan references"
+                           : "prescription references";
+                return (Status.Warning, $"{who} both left and right");
+            }
+
+            bool planHas = plan != Side.None;
+            bool rxHas   = rx   != Side.None;
+
+            if (!planHas && !rxHas)
+                return (Status.Ok, "no laterality on plan or prescription");
+
+            if (planHas != rxHas)   // exactly one side carries a laterality
+                return planHas
+                    ? (Status.Warning, $"plan is {Word(plan)} but prescription has no laterality")
+                    : (Status.Warning, $"prescription is {Word(rx)} but plan has no laterality");
+
+            // both carry a laterality
+            return plan == rx
+                ? (Status.Ok, $"plan and prescription are both {Word(plan)}")
+                : (Status.Warning, $"plan is {Word(plan)} but prescription is {Word(rx)}");
+        }
+
+        private static string Word(Side s) => s.ToString().ToUpper();
 
         // ---- helpers ---------------------------------------------------------------------------
 
