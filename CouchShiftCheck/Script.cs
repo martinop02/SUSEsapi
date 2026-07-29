@@ -46,12 +46,13 @@ namespace VMS.TPS
         // ===================================================================================
         //  Laterality tokens & boundaries
         // ===================================================================================
-        // A side token counts only at a boundary: start/end, one of ('_','-',' '), or a case
-        // transition (lower/digit->Upper, e.g. "BreastL"/"BreastLeft"; or Upper->lower, e.g. the
-        // 'd' in "IMNd"). Upper->lower is a LEADING boundary only, so the leading capital of
-        // "Rectum" cannot close a token. This keeps "Lungs"/"Cord"/"L1_S1" as no-match.
+        // A side token counts only at a boundary: start/end, one of ('_','-',' '), a case transition
+        // (lower/digit->Upper, e.g. "BreastL"/"BreastLeft"; or Upper->lower, e.g. the 'd' in "IMNd"),
+        // or a digit. Upper->lower is a LEADING boundary only, so the leading capital of "Rectum"
+        // cannot close a token. The digit-closes-a-token boundary requires two letters immediately
+        // before the digit, so "Br3" matches but single-letter spine levels like "L1"/"S1" do NOT.
         private const string Lead  = @"(?:^|(?<=[ _\-])|(?<=[a-z0-9])(?=[A-Z])|(?<=[A-Z])(?=[a-z]))";
-        private const string Trail = @"(?:$|(?=[ _\-])|(?<=[a-z0-9])(?=[A-Z]))";
+        private const string Trail = @"(?:$|(?=[ _\-])|(?<=[a-z0-9])(?=[A-Z])|(?<=[A-Za-z]{2})(?=[0-9]))";
         private static readonly Regex LeftRx = new Regex(
             Lead + @"(?i:venstre|left|sin|si|l|s)" + Trail,
             RegexOptions.Compiled | RegexOptions.CultureInvariant);
@@ -328,9 +329,10 @@ namespace VMS.TPS
         private static Side Classify(IEnumerable<string> texts)
         {
             bool left = false, right = false;
-            foreach (var text in texts)
+            foreach (var raw in texts)
             {
-                if (string.IsNullOrWhiteSpace(text)) continue;
+                if (string.IsNullOrWhiteSpace(raw)) continue;
+                string text = StripSite(raw);   // e.g. drop "Br" so its 'r' is not read as RIGHT
                 if (LeftRx.IsMatch(text)) left = true;
                 if (RightRx.IsMatch(text)) right = true;
             }
@@ -338,6 +340,17 @@ namespace VMS.TPS
             if (left) return Side.Left;
             if (right) return Side.Right;
             return Side.None;
+        }
+
+        // Remove recognised site tokens before laterality detection, so an abbreviation that happens
+        // to contain a side letter — notably "Br" (breast), which ends in the RIGHT token 'r' — is
+        // not misread as a side. Site tokens are never laterality tokens, so this cannot hide a real
+        // side ("Br_L" -> " _L" -> LEFT, "Br R" -> " R" -> RIGHT, "Br3" -> " 3" -> none).
+        private static string StripSite(string t)
+        {
+            t = BreastWord.Replace(t, " ");
+            t = BreastAbbr.Replace(t, " ");
+            return t;
         }
 
         private static (Status, string) EvaluateLaterality(Side plan, Side rx)
