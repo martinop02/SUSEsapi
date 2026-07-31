@@ -27,6 +27,38 @@ namespace PalliativeAutoPlan
             @"C:\Python\Programs\Python\Python310\Lib\site-packages\totalsegmentator\bin\totalseg_combine_masks.py";
 
         /// <summary>
+        /// Checks that every id in <paramref name="finalIds"/> already exists as a non-empty
+        /// structure in <paramref name="set"/> (case-insensitive), for the "structures already
+        /// generated" run mode that skips <see cref="Segment"/>. Logs and returns false — listing
+        /// exactly what's missing or empty — if anything required is not usable as-is.
+        /// </summary>
+        public static bool VerifyStructuresExist(StructureSet set, List<string> finalIds, Action<string> log)
+        {
+            var byId = set.Structures.ToDictionary(s => s.Id, s => s, StringComparer.OrdinalIgnoreCase);
+
+            var missing = new List<string>();
+            var empty = new List<string>();
+            foreach (string id in finalIds)
+            {
+                Structure structure;
+                if (!byId.TryGetValue(id, out structure)) missing.Add(id);
+                else if (structure.IsEmpty) empty.Add(id);
+            }
+
+            if (missing.Count == 0 && empty.Count == 0)
+            {
+                log?.Invoke($"All {finalIds.Count} required structure(s) already present in '{set.Id}'.");
+                return true;
+            }
+
+            if (missing.Count > 0)
+                log?.Invoke("Missing structure(s): " + string.Join(", ", missing));
+            if (empty.Count > 0)
+                log?.Invoke("Empty (uncontoured) structure(s): " + string.Join(", ", empty));
+            return false;
+        }
+
+        /// <summary>
         /// Segments every id in <paramref name="finalIds"/> (e.g. "vertebrae_L1", "heart",
         /// "lung_left") on <paramref name="image"/> and adds them to <paramref name="set"/>.
         /// Mergeable OARs are combined from their lobes after segmentation. Returns false if

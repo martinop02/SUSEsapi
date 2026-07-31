@@ -98,11 +98,19 @@ namespace PalliativeAutoPlan
             root.Children.Add(sbh2Radio);
             root.Children.Add(sbh3Radio);
 
+            var structuresGeneratedCheck = new CheckBox
+            {
+                Content = "Structures already generated (reuse open structure set, skip segmentation)",
+                Foreground = Text,
+                Margin = new Thickness(0, 14, 0, 0),   // unchecked by default = segment as usual
+            };
+            root.Children.Add(structuresGeneratedCheck);
+
             var fixationCheck = new CheckBox
             {
                 Content = "Patient has fixation gear (adjust couch + segment fixation)",
                 Foreground = Text,
-                Margin = new Thickness(0, 14, 0, 0),   // unchecked by default = no fixation handling
+                Margin = new Thickness(0, 8, 0, 0),   // unchecked by default = no fixation handling
             };
             root.Children.Add(fixationCheck);
 
@@ -134,6 +142,7 @@ namespace PalliativeAutoPlan
                 RunConfig.MachineId = sbh3Radio.IsChecked == true ? RunConfig.SBH3_2021 : RunConfig.SBH_2;
                 RunConfig.Fast = fastCheck.IsChecked == true;
                 RunConfig.Fixation = fixationCheck.IsChecked == true;
+                RunConfig.StructuresAlreadyGenerated = structuresGeneratedCheck.IsChecked == true;
 
                 window.DialogResult = true;   // closes the modal window
             };
