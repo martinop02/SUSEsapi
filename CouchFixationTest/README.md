@@ -10,23 +10,52 @@ and verified quickly.
 
 ## What it does now
 
-Runs entirely on its own **scratch structure set**, so clinical data is never touched:
+Runs entirely on its own **scratch structure set** (`FixationTest`), so clinical data is never
+touched. The auto-generated body is first **cleaned by keeping only its largest 3D connected
+component** (`FixationGear.KeepLargestComponent`), dropping any disconnected dense-fixation blobs the
+body search left as islands — otherwise those would be erased (and lost) by the passes below.
 
-1. **Structure set** — creates (or reuses) a set called `FixationTest` on the open image.
-2. **Body** — adds it with the native ESAPI search (`CreateAndSearchBody`).
-3. **Fixation gear** — builds a `fixation_gear` structure defined as:
+A single global HU threshold can't cleanly isolate fixation (devices span a huge HU range and
+overlap the couch), so it uses a **two-pass, couch-assisted** approach:
 
-   > every voxel with **HU ≥ −550** that is **not inside the body**.
+1. **Coarse fixation** — `HU ≥ −550` minus body. Rough and patchy, but that's fine.
+2. **Merge into body** — save the original body as `body_orig`, then OR the coarse fixation into the
+   `EXTERNAL` body so it bulges to include the fixation bulk.
+3. **Add the couch** — with the body now including the fixation, `AddCouchStructures` places the
+   couch at the correct height.
+4. **Refined fixation** — a lower threshold (`HU ≥ −750`), keeping only voxels
+   that are **below (posterior to) the original body** on each axial slice and **outside the couch**.
+   The result, `fixation_gear`, is the clean base fixation between patient and couch.
+5. **Merge into body** — OR `fixation_gear` into the `EXTERNAL` body so the external includes it.
 
-Fixation-gear mechanics (`FixationGear.cs`):
+Structures left in the set: `body_orig` (saved original), `fixation_coarse` (pass 1), the couch
+supports, the body (now including the fixation), and `fixation_gear` (the deliverable).
 
-- **Threshold** — per axial slice, mask voxels at/above the HU threshold and convert the mask to
-  contours with OpenCV (the same technique `PalliativeAutoPlan/Segmenter.cs` uses).
-- **Exclude body** — subtract the body volume with ESAPI's boolean op (`SegmentVolume.Sub`).
+Per-pass mechanics (`FixationGear.Segment`, all per axial slice): threshold → erase a list of
+structures' interiors → morphological **close** → optional **keep-below-reference** constraint →
+store into a 3D volume → optional **3D component** size filter → write **outer** contours only
+(`RetrievalModes.External`, so interiors stay solid — no holes carved from small gaps in the mask).
 
-What remains is everything denser than the threshold that is outside the patient — fixation
-devices/masks and, if imaged, the couch/table. This is a deliberately simple first definition; the
-threshold (`HuThreshold` in `Script.cs`, default −550) and noise filtering are meant to be tuned.
+Two of those are configured per pass via `Segment(...)` arguments:
+
+- **3D size filter** (`minComponentCc`): **on for the coarse pass** (`CoarseMinComponentCc`, cleans
+  the bulk so the couch places well), **off for the refined pass** (keep every voxel).
+- **Gap-fill** (`fillGaps`): **on for the refined pass**. In-plane, a larger close (`FillCloseRadiusPx`)
+  bridges the board's broken outline into a closed loop, which `External` then fills solid. Across
+  slices, a 1D close along z (`FillCloseRadiusZ`, in slices) bridges cranio-caudal gaps too — together
+  a separable 3D box close. Keep `FillCloseRadiusZ` small (1-2); larger over-connects in z.
+
+Tunables — thresholds/couch model in `Script.cs` (`CoarseHuThreshold`, `RefinedHuThreshold`,
+`CoarseMinComponentCc`, `CouchModel`, `ZMarginSlices`); close radii in `FixationGear.cs`
+(`CloseRadiusPx`, `FillCloseRadiusPx`, `FillCloseRadiusZ`). "Below" is larger pixel-row = posterior (head-first-supine);
+flip it in `KeepBelowReference` if needed.
+
+Performance: a single `FixationGear.Buffers` (one big `vol`/`visited` allocation) is shared across
+passes while image dimensions match, so we don't re-allocate ~100 MB per pass; passes are limited to
+the patient's z-slice range (the coarse pass to the body range ±`ZMarginSlices`, the refined pass
+skips slices where its below-reference has no contour); and the refined pass rasterizes its
+below-reference once and reuses it for both erasing and the below-constraint. (Cross-pass CT-voxel
+caching is intentionally not done: `AddCouchStructures` can resize the image between passes.)
 
 ## How to run
 
@@ -44,9 +73,10 @@ structures.
 
 ## Layout
 
-- `Script.cs` — entry point (`VMS.TPS.Script`): scratch-set + body setup, threshold constant,
-  orchestration + logging.
-- `FixationGear.cs` — the HU-threshold + body-exclusion structure builder.
-- `LogWindow.cs` — minimal code-only WPF log window.
+- `Script.cs` — entry point (`VMS.TPS.Script`): the 4-step workflow, couch/body helpers, thresholds.
+- `FixationGear.cs` — `Segment(...)`: HU threshold + erase-structures + optional below-reference +
+  3D cleanup; used for both the coarse and refined passes.
+- `LogWindow.xaml` / `LogWindow.xaml.cs` — WPF log window (same proven pattern as
+  PalliativeAutoPlan's; shows first, runs the work in `OnContentRendered`, pumps repaints).
 - ESAPI assemblies are shared from the repo-root `..\ESAPI\` folder; OpenCvSharp comes via NuGet
   (`packages.config`).

@@ -7,7 +7,7 @@ using VMS.TPS.Common.Model.Types;
 using Point = OpenCvSharp.Point;
 using Image = VMS.TPS.Common.Model.API.Image;
 
-namespace CouchFixationTest
+namespace PalliativeAutoPlan
 {
     /// <summary>
     /// Segments dense material into a structure by HU threshold, with optional spatial constraints.
@@ -21,7 +21,7 @@ namespace CouchFixationTest
     /// Per axial slice: build a threshold mask, fill the "erase" structures' contours with 0,
     /// morphologically close small gaps, optionally drop everything not below a reference structure,
     /// and store into a 3D volume. Then a 3D connected-component size filter removes noise, and the
-    /// remaining contours are written back (same OpenCV technique as PalliativeAutoPlan/Segmenter.cs).
+    /// remaining contours are written back (same OpenCV technique as Segmenter.cs).
     ///
     /// Performance: callers pass a reusable <see cref="Buffers"/> (one big vol/visited allocation
     /// shared across passes when the image dimensions match) and a z-slice range so empty slices

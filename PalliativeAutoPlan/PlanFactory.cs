@@ -11,6 +11,7 @@ namespace PalliativeAutoPlan
     public enum PlanTechnique
     {
         Vmat,        // single full VMAT arc, inverse-optimized (OptimizeVMAT)
+        VmatDualArc, // two VMAT arcs: 181->179 CW (coll 30) + 179->181 CCW (coll 330), inverse-optimized
         StaticPair,  // two open posterior fields, forward-planned hinge-angle search
         ApPaPair,    // AP/PA parallel-opposed pair (gantry 0 + 180), forward-planned weight search
     }
@@ -23,6 +24,10 @@ namespace PalliativeAutoPlan
     {
         private const int MaxIdLength = 16;       // Eclipse limit for plan and structure ids
         private const double PtvMarginMm = 5.0;   // 0.5 cm grown in all directions
+        // Close the CTV before the PTV margin to fill the spinal-canal hole/indent. A close fills
+        // gaps up to ~2x the radius; the canal gap is ~7 mm, so 6 mm (fills ~12 mm) clears it with
+        // margin. Raise if a hole/indent remains; lower if the outer PTV shape gets too rounded.
+        private const double PtvCloseRadiusMm = 6.0;
         private const bool RunOptimizationAndDose = true;  // set false to build plans without optimizing/dosing
         private const double DefaultHingeDeg = 90.0;       // static pair angle when RunOptimizationAndDose is off
         private const string VmatOptResolution = "Normal"; // Photon Optimizer resolution: "Normal" ~2.5 mm (not "High"/fine)
@@ -88,9 +93,13 @@ namespace PalliativeAutoPlan
                 union = union.Or(vertebrae[i].SegmentVolume);
             ctv.SegmentVolume = union;
 
-            // PTV = CTV grown 5 mm (0.5 cm) in all directions.
+            // PTV = CTV, first closed to fill the spinal-canal hole/indent (dilate then erode = a
+            // morphological close), then grown by the PTV margin. The close is applied only here, so
+            // the CTV itself stays anatomically correct.
             Structure ptv = set.AddStructure("PTV", ptvId);
-            ptv.SegmentVolume = ctv.SegmentVolume.Margin(PtvMarginMm);
+            SegmentVolume closedCtv = ctv.SegmentVolume.Margin(PtvCloseRadiusMm).Margin(-PtvCloseRadiusMm);
+            ptv.SegmentVolume = closedCtv.Margin(PtvMarginMm);
+            log?.Invoke($"  PTV: closed CTV ({PtvCloseRadiusMm:0.#} mm, fills the spinal-canal gap) + {PtvMarginMm:0.#} mm margin.");
 
             // Create the plan in the prescription's course and set the PTV as target.
             ExternalPlanSetup plan = match.Course.AddExternalPlanSetup(set);
@@ -108,6 +117,10 @@ namespace PalliativeAutoPlan
             // still returns the (already-created) plan, keeping the MVx numbering in sync.
             AddBeamAndOptimize(plan, ptv, set, technique, log);
 
+            // Eclipse auto-creates the plan's primary reference point named after the plan (MVx_...).
+            // Rename it to the PTV id.
+            RenameReferencePointToPtv(plan, ptv, log);
+
             log?.Invoke($"Created plan '{planId}' (course '{match.Course.Id}') with {ctvId} + {ptvId}.");
             return plan;
         }
@@ -121,9 +134,10 @@ namespace PalliativeAutoPlan
             {
                 switch (technique)
                 {
-                    case PlanTechnique.StaticPair: BuildStaticPair(plan, ptv, set, log); break;
-                    case PlanTechnique.ApPaPair:   BuildApPaPair(plan, ptv, set, log);   break;
-                    default:                        BuildVmatArc(plan, ptv, set, log);    break;
+                    case PlanTechnique.StaticPair:  BuildStaticPair(plan, ptv, set, log); break;
+                    case PlanTechnique.ApPaPair:    BuildApPaPair(plan, ptv, set, log);   break;
+                    case PlanTechnique.VmatDualArc: BuildVmatArc(plan, ptv, set, log, dualArc: true);  break;
+                    default:                        BuildVmatArc(plan, ptv, set, log, dualArc: false); break;
                 }
             }
             catch (Exception ex)
@@ -132,8 +146,10 @@ namespace PalliativeAutoPlan
             }
         }
 
-        // Single full VMAT arc, inverse-optimized (OptimizeVMAT) then dosed.
-        private static void BuildVmatArc(ExternalPlanSetup plan, Structure ptv, StructureSet set, Action<string> log)
+        // VMAT arc(s), inverse-optimized (OptimizeVMAT) then dosed. dualArc=false adds a single full
+        // arc; dualArc=true adds the CW+CCW pair. Everything else (models, resolution, ASC,
+        // objectives, optimize, dose, normalize) is identical.
+        private static void BuildVmatArc(ExternalPlanSetup plan, Structure ptv, StructureSet set, Action<string> log, bool dualArc)
         {
             if (!Calculation.SetVmatModels(plan, log))
             {
@@ -149,7 +165,8 @@ namespace PalliativeAutoPlan
             // (quicker), else Very High (higher quality).
             Calculation.SetApertureShapeController(plan, RunConfig.Fast ? Calculation.AscModerate : Calculation.AscVeryHigh, log);
 
-            BeamBuilder.AddSingleArc(plan, ptv, log);
+            if (dualArc) BeamBuilder.AddDualArc(plan, ptv, log);
+            else BeamBuilder.AddSingleArc(plan, ptv, log);
             int objectives = OptimizationGoals.Apply(plan, ptv, set, log);
 
             if (objectives > 0 && RunOptimizationAndDose)
@@ -219,6 +236,46 @@ namespace PalliativeAutoPlan
                 // Build-only: equal-weight AP/PA pair, no dose.
                 StaticFieldBuilder.AddApPaPair(plan, ptv, ptv.CenterPoint, log);
                 log?.Invoke("  Built AP/PA pair at equal weight (dose skipped).");
+            }
+        }
+
+        // Eclipse auto-creates the plan's (target) reference point named after the plan (MVx_...).
+        // That reference point is NOT necessarily exposed as PrimaryReferencePoint, so search all of
+        // plan.ReferencePoints for it and rename it to the PTV id (ReferencePoint.Id is settable in
+        // ESAPI 18.0). Logs the reference points present so the naming can be verified. Non-fatal.
+        private static void RenameReferencePointToPtv(ExternalPlanSetup plan, Structure ptv, Action<string> log)
+        {
+            try
+            {
+                var rps = plan.ReferencePoints?.ToList() ?? new List<ReferencePoint>();
+                log?.Invoke("  Reference points on plan: "
+                    + (rps.Count == 0 ? "(none)" : string.Join(", ", rps.Select(r => "'" + r.Id + "'"))));
+
+                if (rps.Any(r => r.Id == ptv.Id))
+                {
+                    log?.Invoke($"  Reference point already named '{ptv.Id}'.");
+                    return;
+                }
+
+                // Prefer the primary; else the one named after the plan (MVx_...); else the only one.
+                ReferencePoint target = plan.PrimaryReferencePoint
+                                     ?? rps.FirstOrDefault(r => r.Id == plan.Id)
+                                     ?? (rps.Count == 1 ? rps[0] : null);
+
+                if (target == null)
+                {
+                    log?.Invoke("  Could not identify the target reference point to rename "
+                              + (rps.Count == 0 ? "(the plan has none yet)." : "(multiple present)."));
+                    return;
+                }
+
+                string old = target.Id;
+                target.Id = ptv.Id;
+                log?.Invoke($"  Renamed reference point '{old}' -> '{ptv.Id}'.");
+            }
+            catch (Exception ex)
+            {
+                log?.Invoke($"  WARNING: could not rename reference point to '{ptv.Id}': {ex.Message}");
             }
         }
 

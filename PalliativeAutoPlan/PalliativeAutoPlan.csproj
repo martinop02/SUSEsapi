@@ -92,6 +92,8 @@
     <Compile Include="Calculation.cs" />
     <Compile Include="ColorCodes.cs" />
     <Compile Include="Command.cs" />
+    <Compile Include="Fixation.cs" />
+    <Compile Include="FixationGear.cs" />
     <Compile Include="ImageSelector.cs" />
     <Compile Include="Isocenter.cs" />
     <Compile Include="RunConfig.cs" />

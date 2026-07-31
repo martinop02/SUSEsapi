@@ -99,9 +99,27 @@ namespace VMS.TPS
                 return;
             }
 
+            // Optional fixation handling (pre-couch): clean the body, segment a rough fixation and
+            // merge it into the body so the couch places correctly on a patient tilted by the gear.
+            Fixation.State fixState = null;
+            if (RunConfig.Fixation)
+            {
+                log("Fixation gear handling (pre-couch)...");
+                Structure body = set.Structures.FirstOrDefault(s => s.DicomType == "EXTERNAL" && !s.IsEmpty);
+                fixState = Timing.Run("Fixation pre-couch", log, () => Fixation.PreCouch(set, body, log));
+            }
+
             // Add the treatment couch so it is part of the structure set used for optimization
             // and dose calculation.
             EnsureCouch(set, log);
+
+            // Optional fixation handling (post-couch): segment the clean fixation (below the body,
+            // outside the couch), merge it into the body, and delete the rough fixation.
+            if (RunConfig.Fixation && fixState != null)
+            {
+                log("Fixation gear handling (post-couch)...");
+                Timing.Run("Fixation post-couch", log, () => Fixation.PostCouch(set, fixState, log));
+            }
 
             // 4) One plan per prescription. MVx continues from the global maximum; the number
             //    only advances when a plan is actually created.

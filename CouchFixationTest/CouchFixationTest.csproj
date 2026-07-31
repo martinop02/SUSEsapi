@@ -10,6 +10,8 @@
     <RootNamespace>CouchFixationTest</RootNamespace>
     <!-- Eclipse loads binary plugins by the "*.esapi.dll" convention. -->
     <AssemblyName>CouchFixationTest.esapi</AssemblyName>
+    <!-- WPF flavor + C# project type, so the XAML log window compiles (same as PalliativeAutoPlan). -->
+    <ProjectTypeGuids>{60dc8134-eba5-43b8-bcc9-bb4bc16c2548};{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}</ProjectTypeGuids>
     <TargetFrameworkVersion>v4.8</TargetFrameworkVersion>
     <FileAlignment>512</FileAlignment>
   </PropertyGroup>
@@ -18,8 +20,8 @@
     <DebugSymbols>true</DebugSymbols>
     <DebugType>full</DebugType>
     <Optimize>false</Optimize>
-    <!-- Point this at your Eclipse published-scripts folder to deploy on build. -->
-    <OutputPath>bin\Debug\</OutputPath>
+    <!-- Same deploy share as PalliativeAutoPlan, but its own folder. -->
+    <OutputPath>\\10.92.139.197\Sharedfiles\Personlige mapper\Martin\Scripts\Nyeste Versjoner\CouchFixationTest\</OutputPath>
     <DefineConstants>DEBUG;TRACE</DefineConstants>
     <ErrorReport>prompt</ErrorReport>
     <WarningLevel>4</WarningLevel>
@@ -42,7 +44,7 @@
     <Reference Include="System.Xml" />
     <Reference Include="System.Xml.Linq" />
     <Reference Include="Microsoft.CSharp" />
-    <!-- WPF assemblies for the code-only log window. -->
+    <!-- WPF assemblies for the XAML log window. -->
     <Reference Include="WindowsBase" />
     <Reference Include="PresentationCore" />
     <Reference Include="PresentationFramework" />
@@ -66,7 +68,14 @@
   <ItemGroup>
     <Compile Include="Script.cs" />
     <Compile Include="FixationGear.cs" />
-    <Compile Include="LogWindow.cs" />
+    <Compile Include="LogWindow.xaml.cs">
+      <DependentUpon>LogWindow.xaml</DependentUpon>
+    </Compile>
+  </ItemGroup>
+  <ItemGroup>
+    <Page Include="LogWindow.xaml">
+      <Generator>MSBuild:Compile</Generator>
+    </Page>
   </ItemGroup>
   <ItemGroup>
     <None Include="packages.config" />
