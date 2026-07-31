@@ -87,6 +87,17 @@ namespace VMS.TPS
             StructureSet set = image.CreateNewStructureSet();
             log($"Created structure set '{set.Id}'.");
 
+            // Give it a distinguishable, collision-free Id ("TotalSegAuto", "TotalSegAuto1", ...)
+            // rather than the Eclipse default, so it's easy to recognize this auto-created set.
+            var takenIds = new HashSet<string>(
+             patient.StructureSets.Where(s => s.UID != set.UID).Select(s => s.Id),
+            StringComparer.OrdinalIgnoreCase);
+
+            string newId = "TotalSegAuto";
+            for (int n = 1; takenIds.Contains(newId); n++) newId = "TotalSegAuto" + n;
+
+            set.Id = newId;
+
             // A new structure set has no external/BODY contour; beam placement and optimization
             // (PlanFactory) crash without one, so create it now if it is missing.
             EnsureExternalBody(set, log);
