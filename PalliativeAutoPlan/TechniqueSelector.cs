@@ -100,7 +100,7 @@ namespace PalliativeAutoPlan
 
             var structuresGeneratedCheck = new CheckBox
             {
-                Content = "Structures already generated (reuse open structure set, skip segmentation)",
+                Content = "Structures already generated (reuse existing plan; skip segmentation + CTV/PTV)",
                 Foreground = Text,
                 Margin = new Thickness(0, 14, 0, 0),   // unchecked by default = segment as usual
             };

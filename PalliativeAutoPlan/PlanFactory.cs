@@ -125,6 +125,59 @@ namespace PalliativeAutoPlan
             return plan;
         }
 
+        /// <summary>
+        /// "Structures already generated" run mode: CreatePlan already made the CTV/PTV together
+        /// with the plan that targets them, so if those structures exist an earlier plan for this
+        /// prescription exists too. Reuses that plan instead of creating a new one — the caller is
+        /// expected to have already removed its old beams (e.g. from an earlier VMAT run), so this
+        /// just continues exactly where CreatePlan does after CTV/PTV/plan creation: add beams for
+        /// the newly chosen technique, optimize, calculate dose, and (re)confirm the reference point
+        /// name. Returns null (logging why) if the CTV/PTV are missing/empty or no matching plan can
+        /// be found; the caller should treat that as a per-prescription failure, not abort the run.
+        /// </summary>
+        public static PlanSetup ReplanExistingPlan(PrescriptionMatch match, StructureSet set, PlanTechnique technique, Action<string> log)
+        {
+            string ctvId = $"CTV_{match.Name}_8";
+            string ptvId = $"PTV_{match.Name}_8";
+
+            Structure ctv = set.Structures.FirstOrDefault(s => s.Id == ctvId);
+            Structure ptv = set.Structures.FirstOrDefault(s => s.Id == ptvId);
+            if (ctv == null || ctv.IsEmpty || ptv == null || ptv.IsEmpty)
+            {
+                log?.Invoke($"ERROR '{match.Name}': structures already generated was checked, but '{ctvId}'/'{ptvId}' are missing or empty in '{set.Id}'. Run without the checkbox to (re)create them.");
+                return null;
+            }
+
+            // The plan CreatePlan made for this prescription: same structure set, target = the PTV above.
+            List<ExternalPlanSetup> candidates = match.Course.ExternalPlanSetups
+                .Where(p => p.StructureSet != null && p.StructureSet.UID == set.UID && p.TargetVolumeID == ptvId)
+                .ToList();
+
+            if (candidates.Count == 0)
+            {
+                log?.Invoke($"ERROR '{match.Name}': structures already generated was checked, but no existing plan targeting '{ptvId}' was found in course '{match.Course.Id}'. Run without the checkbox to create one.");
+                return null;
+            }
+
+            ExternalPlanSetup plan = candidates.OrderByDescending(p => ParseMvNumber(p.Id)).First();
+            if (candidates.Count > 1)
+                log?.Invoke($"  NOTE: {candidates.Count} plans target '{ptvId}'; reusing the most recent, '{plan.Id}'.");
+
+            log?.Invoke($"Reusing plan '{plan.Id}' for '{match.Name}' (target '{ptvId}') — adding {technique} beams.");
+
+            AddBeamAndOptimize(plan, ptv, set, technique, log);
+            RenameReferencePointToPtv(plan, ptv, log);
+            return plan;
+        }
+
+        // MVx number parsed from a plan id, or -1 if it doesn't match the pattern (sorts last).
+        private static int ParseMvNumber(string planId)
+        {
+            Match m = MvRegex.Match(planId ?? string.Empty);
+            int n;
+            return (m.Success && int.TryParse(m.Groups[1].Value, out n)) ? n : -1;
+        }
+
         // Adds beams and produces dose according to the chosen technique. Any failure here is
         // logged but not rethrown, so the plan (already created above) is still returned and the
         // MVx numbering stays in sync.

@@ -176,30 +176,36 @@ namespace VMS.TPS
             }
 
             // 4) One plan per prescription. MVx continues from the global maximum; the number
-            //    only advances when a plan is actually created.
+            //    only advances when a NEW plan is actually created.
+            //    When reusing structures, CreatePlan already made the CTV/PTV *and* the plan that
+            //    targets them earlier, so there's an existing plan to reuse — swap its beams for
+            //    the newly chosen technique instead of creating another plan/CTV/PTV.
             int mv = PlanFactory.GetHighestMvNumber(patient);
-            log($"Highest existing MV number: {mv}.");
+            if (!reuseStructures) log($"Highest existing MV number: {mv}.");
 
             int created = 0;
             foreach (PrescriptionMatch match in matches)
             {
                 try
                 {
-                    PlanSetup plan = Timing.Run($"Plan {match.Name}", log, () => PlanFactory.CreatePlan(match, set, mv + 1, technique, log));
+                    PlanSetup plan = reuseStructures
+                        ? Timing.Run($"Replan {match.Name}", log, () => PlanFactory.ReplanExistingPlan(match, set, technique, log))
+                        : Timing.Run($"Plan {match.Name}", log, () => PlanFactory.CreatePlan(match, set, mv + 1, technique, log));
+
                     if (plan != null)
                     {
-                        mv++;
+                        if (!reuseStructures) mv++;
                         created++;
                     }
                 }
                 catch (Exception ex)
                 {
-                    log($"ERROR creating plan for '{match.Name}': {ex.Message}");
+                    log($"ERROR {(reuseStructures ? "re-planning" : "creating plan for")} '{match.Name}': {ex.Message}");
                 }
             }
 
             Timing.Stop(total, "TOTAL", log);
-            log($"Done. Created {created} of {matches.Count} plan(s). You can close this window.");
+            log($"Done. {(reuseStructures ? "Re-planned" : "Created")} {created} of {matches.Count} plan(s). You can close this window.");
         }
 
         // A newly created structure set has no external/BODY contour, and beam placement /
