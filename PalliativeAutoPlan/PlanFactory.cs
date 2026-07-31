@@ -57,9 +57,11 @@ namespace PalliativeAutoPlan
         /// </summary>
         public static PlanSetup CreatePlan(PrescriptionMatch match, StructureSet set, int mvNumber, PlanTechnique technique, Action<string> log)
         {
-            string planId = $"MV{mvNumber}_{match.Name}_8";
             string ctvId = $"CTV_{match.Name}_8";
             string ptvId = $"PTV_{match.Name}_8";
+
+            // "MV{n}_{name}_8" normally; "MV{X} kopi {Y}" when a plan for this prescription exists.
+            string planId = ResolvePlanId(match, ptvId, mvNumber, log);
 
             foreach (string id in new[] { planId, ctvId, ptvId })
                 if (id.Length > MaxIdLength)
@@ -86,20 +88,38 @@ namespace PalliativeAutoPlan
                 return null;
             }
 
-            // CTV = union of all vertebrae in the prescription.
-            Structure ctv = set.AddStructure("CTV", ctvId);
-            SegmentVolume union = vertebrae[0].SegmentVolume;
-            for (int i = 1; i < vertebrae.Count; i++)
-                union = union.Or(vertebrae[i].SegmentVolume);
-            ctv.SegmentVolume = union;
+            // CTV = union of all vertebrae in the prescription. On a repeat run the CTV/PTV are
+            // already there from the first plan — reuse them as-is (AddStructure would throw on the
+            // duplicate id, and re-deriving them would clobber any manual edit).
+            bool ctvExisted;
+            Structure ctv = GetOrAddStructure(set, "CTV", ctvId, out ctvExisted);
+            if (ctvExisted && !ctv.IsEmpty)
+            {
+                log?.Invoke($"  Reusing existing '{ctvId}'.");
+            }
+            else
+            {
+                SegmentVolume union = vertebrae[0].SegmentVolume;
+                for (int i = 1; i < vertebrae.Count; i++)
+                    union = union.Or(vertebrae[i].SegmentVolume);
+                ctv.SegmentVolume = union;
+            }
 
             // PTV = CTV, first closed to fill the spinal-canal hole/indent (dilate then erode = a
             // morphological close), then grown by the PTV margin. The close is applied only here, so
             // the CTV itself stays anatomically correct.
-            Structure ptv = set.AddStructure("PTV", ptvId);
-            SegmentVolume closedCtv = ctv.SegmentVolume.Margin(PtvCloseRadiusMm).Margin(-PtvCloseRadiusMm);
-            ptv.SegmentVolume = closedCtv.Margin(PtvMarginMm);
-            log?.Invoke($"  PTV: closed CTV ({PtvCloseRadiusMm:0.#} mm, fills the spinal-canal gap) + {PtvMarginMm:0.#} mm margin.");
+            bool ptvExisted;
+            Structure ptv = GetOrAddStructure(set, "PTV", ptvId, out ptvExisted);
+            if (ptvExisted && !ptv.IsEmpty)
+            {
+                log?.Invoke($"  Reusing existing '{ptvId}'.");
+            }
+            else
+            {
+                SegmentVolume closedCtv = ctv.SegmentVolume.Margin(PtvCloseRadiusMm).Margin(-PtvCloseRadiusMm);
+                ptv.SegmentVolume = closedCtv.Margin(PtvMarginMm);
+                log?.Invoke($"  PTV: closed CTV ({PtvCloseRadiusMm:0.#} mm, fills the spinal-canal gap) + {PtvMarginMm:0.#} mm margin.");
+            }
 
             // Create the plan in the prescription's course and set the PTV as target.
             ExternalPlanSetup plan = match.Course.AddExternalPlanSetup(set);
@@ -125,57 +145,57 @@ namespace PalliativeAutoPlan
             return plan;
         }
 
-        /// <summary>
-        /// "Structures already generated" run mode: CreatePlan already made the CTV/PTV together
-        /// with the plan that targets them, so if those structures exist an earlier plan for this
-        /// prescription exists too. Reuses that plan instead of creating a new one — the caller is
-        /// expected to have already removed its old beams (e.g. from an earlier VMAT run), so this
-        /// just continues exactly where CreatePlan does after CTV/PTV/plan creation: add beams for
-        /// the newly chosen technique, optimize, calculate dose, and (re)confirm the reference point
-        /// name. Returns null (logging why) if the CTV/PTV are missing/empty or no matching plan can
-        /// be found; the caller should treat that as a per-prescription failure, not abort the run.
-        /// </summary>
-        public static PlanSetup ReplanExistingPlan(PrescriptionMatch match, StructureSet set, PlanTechnique technique, Action<string> log)
-        {
-            string ctvId = $"CTV_{match.Name}_8";
-            string ptvId = $"PTV_{match.Name}_8";
-
-            Structure ctv = set.Structures.FirstOrDefault(s => s.Id == ctvId);
-            Structure ptv = set.Structures.FirstOrDefault(s => s.Id == ptvId);
-            if (ctv == null || ctv.IsEmpty || ptv == null || ptv.IsEmpty)
-            {
-                log?.Invoke($"ERROR '{match.Name}': structures already generated was checked, but '{ctvId}'/'{ptvId}' are missing or empty in '{set.Id}'. Run without the checkbox to (re)create them.");
-                return null;
-            }
-
-            // The plan CreatePlan made for this prescription: same structure set, target = the PTV above.
-            List<ExternalPlanSetup> candidates = match.Course.ExternalPlanSetups
-                .Where(p => p.StructureSet != null && p.StructureSet.UID == set.UID && p.TargetVolumeID == ptvId)
-                .ToList();
-
-            if (candidates.Count == 0)
-            {
-                log?.Invoke($"ERROR '{match.Name}': structures already generated was checked, but no existing plan targeting '{ptvId}' was found in course '{match.Course.Id}'. Run without the checkbox to create one.");
-                return null;
-            }
-
-            ExternalPlanSetup plan = candidates.OrderByDescending(p => ParseMvNumber(p.Id)).First();
-            if (candidates.Count > 1)
-                log?.Invoke($"  NOTE: {candidates.Count} plans target '{ptvId}'; reusing the most recent, '{plan.Id}'.");
-
-            log?.Invoke($"Reusing plan '{plan.Id}' for '{match.Name}' (target '{ptvId}') — adding {technique} beams.");
-
-            AddBeamAndOptimize(plan, ptv, set, technique, log);
-            RenameReferencePointToPtv(plan, ptv, log);
-            return plan;
-        }
-
         // MVx number parsed from a plan id, or -1 if it doesn't match the pattern (sorts last).
         private static int ParseMvNumber(string planId)
         {
             Match m = MvRegex.Match(planId ?? string.Empty);
             int n;
             return (m.Success && int.TryParse(m.Groups[1].Value, out n)) ? n : -1;
+        }
+
+        /// <summary>
+        /// The id for this prescription's plan. Normally "MV{mvNumber}_{name}_8", but when a plan
+        /// for this prescription already exists (same course, same PTV target — e.g. a VMAT run and
+        /// the user now wants to try AP/PA on the same structures) the new plan is a copy of the
+        /// original and is named "MV{X} kopi {Y}": X = the original plan's MV number, Y = the next
+        /// free copy number. That keeps it visibly tied to the original and stays inside the 16-char
+        /// Eclipse id limit ("MV999 kopi 99" is 13).
+        /// </summary>
+        private static string ResolvePlanId(PrescriptionMatch match, string ptvId, int mvNumber, Action<string> log)
+        {
+            List<ExternalPlanSetup> existing = match.Course.ExternalPlanSetups
+                .Where(p => string.Equals(p.TargetVolumeID, ptvId, StringComparison.OrdinalIgnoreCase))
+                .ToList();
+
+            if (existing.Count == 0)
+                return $"MV{mvNumber}_{match.Name}_8";   // first plan for this prescription
+
+            // X: the original plan's MV number (lowest "MVn_..." among them); fall back to the next
+            // free MV number if only copies remain.
+            int x = existing.Select(p => ParseMvNumber(p.Id)).Where(n => n > 0).DefaultIfEmpty(mvNumber).Min();
+
+            var takenInCourse = new HashSet<string>(
+                match.Course.PlanSetups.Select(p => p.Id), StringComparer.OrdinalIgnoreCase);
+
+            for (int y = 1; y < 1000; y++)
+            {
+                string candidate = $"MV{x} kopi {y}";
+                if (!takenInCourse.Contains(candidate))
+                {
+                    log?.Invoke($"  {existing.Count} existing plan(s) already target '{ptvId}'; naming this one '{candidate}'.");
+                    return candidate;
+                }
+            }
+            return $"MV{mvNumber}_{match.Name}_8";   // unreachable in practice
+        }
+
+        // Finds the structure, or creates it if absent. Reusing an existing CTV/PTV is what makes a
+        // second run on an already-segmented structure set work: AddStructure throws on a duplicate id.
+        private static Structure GetOrAddStructure(StructureSet set, string dicomType, string id, out bool existed)
+        {
+            Structure s = set.Structures.FirstOrDefault(x => string.Equals(x.Id, id, StringComparison.OrdinalIgnoreCase));
+            existed = s != null;
+            return existed ? s : set.AddStructure(dicomType, id);
         }
 
         // Adds beams and produces dose according to the chosen technique. Any failure here is
@@ -307,6 +327,19 @@ namespace PalliativeAutoPlan
                 if (rps.Any(r => r.Id == ptv.Id))
                 {
                     log?.Invoke($"  Reference point already named '{ptv.Id}'.");
+                    return;
+                }
+
+                // On a repeat run the original plan already owns a reference point with this id.
+                // Reference point ids are unique per course, so renaming would throw — leave the
+                // copy's own (MVx.../"MVx kopi y") reference point alone.
+                bool takenByAnotherPlan = plan.Course.PlanSetups
+                    .Where(p => p.Id != plan.Id)
+                    .SelectMany(p => p.ReferencePoints ?? Enumerable.Empty<ReferencePoint>())
+                    .Any(r => string.Equals(r.Id, ptv.Id, StringComparison.OrdinalIgnoreCase));
+                if (takenByAnotherPlan)
+                {
+                    log?.Invoke($"  Reference point '{ptv.Id}' already belongs to another plan in this course; keeping this plan's own reference point.");
                     return;
                 }
 

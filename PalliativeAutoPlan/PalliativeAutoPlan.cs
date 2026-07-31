@@ -81,7 +81,7 @@ namespace VMS.TPS
 
             patient.BeginModifications();
 
-            context.Image.Series.SetImagingDevice("Def_CTScanner");
+            SetImagingDeviceIfPossible(patient, image, log);
 
             StructureSet set;
             bool reuseStructures = RunConfig.StructuresAlreadyGenerated;
@@ -175,37 +175,76 @@ namespace VMS.TPS
                 Timing.Run("Fixation post-couch", log, () => Fixation.PostCouch(set, fixState, log));
             }
 
-            // 4) One plan per prescription. MVx continues from the global maximum; the number
-            //    only advances when a NEW plan is actually created.
-            //    When reusing structures, CreatePlan already made the CTV/PTV *and* the plan that
-            //    targets them earlier, so there's an existing plan to reuse — swap its beams for
-            //    the newly chosen technique instead of creating another plan/CTV/PTV.
+            // 4) One plan per prescription. MVx continues from the global maximum; the number only
+            //    advances when a plan actually takes a new MVx id. If a plan for the prescription
+            //    already exists (repeat run on the same structures) CreatePlan names the new plan
+            //    "MV{X} kopi {Y}" instead and reuses the existing CTV/PTV.
             int mv = PlanFactory.GetHighestMvNumber(patient);
-            if (!reuseStructures) log($"Highest existing MV number: {mv}.");
+            log($"Highest existing MV number: {mv}.");
 
             int created = 0;
             foreach (PrescriptionMatch match in matches)
             {
                 try
                 {
-                    PlanSetup plan = reuseStructures
-                        ? Timing.Run($"Replan {match.Name}", log, () => PlanFactory.ReplanExistingPlan(match, set, technique, log))
-                        : Timing.Run($"Plan {match.Name}", log, () => PlanFactory.CreatePlan(match, set, mv + 1, technique, log));
-
+                    int mvForThisPlan = mv + 1;
+                    PlanSetup plan = Timing.Run($"Plan {match.Name}", log, () => PlanFactory.CreatePlan(match, set, mvForThisPlan, technique, log));
                     if (plan != null)
                     {
-                        if (!reuseStructures) mv++;
                         created++;
+                        // Re-read rather than assuming +1: a copy plan ("MVx kopi y") does not
+                        // consume a new MV number, so the highest MVx is unchanged in that case.
+                        mv = PlanFactory.GetHighestMvNumber(patient);
                     }
                 }
                 catch (Exception ex)
                 {
-                    log($"ERROR {(reuseStructures ? "re-planning" : "creating plan for")} '{match.Name}': {ex.Message}");
+                    log($"ERROR creating plan for '{match.Name}': {ex.Message}");
                 }
             }
 
             Timing.Stop(total, "TOTAL", log);
-            log($"Done. {(reuseStructures ? "Re-planned" : "Created")} {created} of {matches.Count} plan(s). You can close this window.");
+            log($"Done. Created {created} of {matches.Count} plan(s). You can close this window.");
+        }
+
+        // Imaging device assigned to the image series so dose calculation has a CT calibration curve.
+        private const string ImagingDeviceId = "Def_CTScanner";
+
+        // Eclipse refuses to change a series' imaging device once a calculated plan uses that
+        // series, so on a repeat run (a second plan on the same image) this must be skipped —
+        // otherwise the whole run dies here. The device is already set from the first run anyway.
+        private static void SetImagingDeviceIfPossible(Patient patient, Image image, Action<string> log)
+        {
+            Series series = image.Series;
+            if (series == null)
+            {
+                log("No image series available; imaging device not set.");
+                return;
+            }
+
+            bool calculatedPlanExists = patient.Courses
+                .SelectMany(c => c.PlanSetups)
+                .Any(p => p.IsDoseValid
+                       && p.StructureSet != null
+                       && p.StructureSet.Image != null
+                       && p.StructureSet.Image.Series != null
+                       && p.StructureSet.Image.Series.UID == series.UID);
+
+            if (calculatedPlanExists)
+            {
+                log($"Imaging device: skipped — a calculated plan already uses this image series (it is already set).");
+                return;
+            }
+
+            try
+            {
+                series.SetImagingDevice(ImagingDeviceId);
+                log($"Imaging device set to '{ImagingDeviceId}'.");
+            }
+            catch (Exception ex)
+            {
+                log($"NOTE: could not set imaging device '{ImagingDeviceId}': {ex.Message}");
+            }
         }
 
         // A newly created structure set has no external/BODY contour, and beam placement /
