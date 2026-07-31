@@ -1,0 +1,25 @@
+
+Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio Version 17
+VisualStudioVersion = 17.14.36221.1 d17.14
+MinimumVisualStudioVersion = 10.0.40219.1
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "StructureComparePickNoBody", "StructureComparePickNoBody.csproj", "{80C9B36A-36F7-4A62-B80F-2E96708BF72C}"
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|x64 = Debug|x64
+		Release|x64 = Release|x64
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{80C9B36A-36F7-4A62-B80F-2E96708BF72C}.Debug|x64.ActiveCfg = Debug|x64
+		{80C9B36A-36F7-4A62-B80F-2E96708BF72C}.Debug|x64.Build.0 = Debug|x64
+		{80C9B36A-36F7-4A62-B80F-2E96708BF72C}.Release|x64.ActiveCfg = Release|x64
+		{80C9B36A-36F7-4A62-B80F-2E96708BF72C}.Release|x64.Build.0 = Release|x64
+	EndGlobalSection
+	GlobalSection(SolutionProperties) = preSolution
+		HideSolutionNode = FALSE
+	EndGlobalSection
+	GlobalSection(ExtensibilityGlobals) = postSolution
+		SolutionGuid = {0770BB02-D18E-4178-B158-637F34D1D423}
+	EndGlobalSection
+EndGlobal

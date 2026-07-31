@@ -1,0 +1,25 @@
+
+Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio Version 17
+VisualStudioVersion = 17.14.36221.1 d17.14
+MinimumVisualStudioVersion = 10.0.40219.1
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "StructureCompareLink", "StructureCompareLink.csproj", "{7932B5F7-F085-4E90-8A3D-5170FA652AC3}"
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|x64 = Debug|x64
+		Release|x64 = Release|x64
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{7932B5F7-F085-4E90-8A3D-5170FA652AC3}.Debug|x64.ActiveCfg = Debug|x64
+		{7932B5F7-F085-4E90-8A3D-5170FA652AC3}.Debug|x64.Build.0 = Debug|x64
+		{7932B5F7-F085-4E90-8A3D-5170FA652AC3}.Release|x64.ActiveCfg = Release|x64
+		{7932B5F7-F085-4E90-8A3D-5170FA652AC3}.Release|x64.Build.0 = Release|x64
+	EndGlobalSection
+	GlobalSection(SolutionProperties) = preSolution
+		HideSolutionNode = FALSE
+	EndGlobalSection
+	GlobalSection(ExtensibilityGlobals) = postSolution
+		SolutionGuid = {CE2A63FD-CAA7-40AD-AA85-515B36BDA12E}
+	EndGlobalSection
+EndGlobal
